@@ -1,0 +1,43 @@
+---
+- name: Wait for all cluster nodes to register
+  ansible.builtin.shell: |
+    {{ rke2_kubectl }} --kubeconfig {{ rke2_kubeconfig_remote }} \
+      get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | wc -l
+  register: node_count
+  changed_when: false
+  retries: 60
+  delay: 5
+  until: node_count.stdout | int >= (groups['rke2_cluster'] | length)
+
+- name: Ensure local kubeconfig directory exists
+  ansible.builtin.file:
+    path: "{{ rke2_kubeconfig_local | dirname }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+
+- name: Fetch kubeconfig to local
+  ansible.builtin.fetch:
+    src: "{{ rke2_kubeconfig_remote }}"
+    dest: "{{ rke2_kubeconfig_local }}"
+    flat: true
+
+- name: Rewrite kubeconfig server URL to API VIP
+  ansible.builtin.replace:
+    path: "{{ rke2_kubeconfig_local }}"
+    regexp: 'server: https://127\.0\.0\.1:6443'
+    replace: "server: https://{{ rke2_api_vip }}:6443"
+  delegate_to: localhost
+  become: false
+
+- name: Label worker nodes for Longhorn
+  ansible.builtin.shell: |
+    {{ rke2_kubectl }} --kubeconfig {{ rke2_kubeconfig_remote }} \
+      label node {{ item }} longhorn=true --overwrite
+  loop: "{{ groups['rke2_agents'] }}"
+  changed_when: false
+
+- name: Print kubeconfig path
+  ansible.builtin.debug:
+    msg: "Kubeconfig fetched to {{ rke2_kubeconfig_local }} — `export KUBECONFIG={{ rke2_kubeconfig_local }}`"

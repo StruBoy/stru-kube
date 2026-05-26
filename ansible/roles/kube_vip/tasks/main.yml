@@ -1,0 +1,25 @@
+---
+- name: Ensure RKE2 manifests directory exists
+  ansible.builtin.file:
+    path: "{{ rke2_manifests_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop kube-vip RBAC manifest
+  ansible.builtin.get_url:
+    url: "{{ kube_vip_rbac_url }}"
+    dest: "{{ rke2_manifests_dir }}/kube-vip-rbac.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+
+- name: Render kube-vip static-pod manifest
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: "{{ rke2_manifests_dir }}/kube-vip.yaml"
+    owner: root
+    group: root
+    mode: "0600"

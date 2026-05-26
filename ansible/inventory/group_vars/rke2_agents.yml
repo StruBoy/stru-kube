@@ -1,0 +1,5 @@
+---
+rke2_role: agent
+rke2_service: rke2-agent
+node_labels:
+  - longhorn=true

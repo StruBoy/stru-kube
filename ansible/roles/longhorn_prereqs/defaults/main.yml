@@ -1,0 +1,8 @@
+---
+longhorn_data_device: /dev/sdb
+longhorn_data_mount: /var/lib/longhorn
+longhorn_packages:
+  - open-iscsi
+  - nfs-common
+  - cryptsetup
+  - dmsetup

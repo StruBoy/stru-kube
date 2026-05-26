@@ -1,0 +1,30 @@
+---
+# RKE2
+rke2_channel: stable
+rke2_version: ""           # empty = follow channel; pin (e.g. "v1.30.5+rke2r1") for reproducibility
+rke2_token: "{{ lookup('env', 'RKE2_TOKEN') }}"
+
+# Cluster networking
+cluster_cidr: 10.42.0.0/16
+service_cidr: 10.43.0.0/16
+cluster_domain: cluster.local
+cni: canal
+
+# kube-vip
+kube_vip_image: ghcr.io/kube-vip/kube-vip:v0.8.7
+kube_vip_interface: eth0
+
+# Addon chart versions
+metallb_chart_version: "0.14.8"
+metallb_pool_range: "10.74.2.200-10.74.2.220"
+longhorn_chart_version: "1.7.2"
+
+# Longhorn UI ingress
+longhorn_ui_host: longhorn.lan
+longhorn_ui_user: "{{ lookup('env', 'LONGHORN_UI_USER') | default('admin', true) }}"
+longhorn_ui_pass: "{{ lookup('env', 'LONGHORN_UI_PASS') | default('changeme', true) }}"
+
+# Path conventions
+rke2_manifests_dir: /var/lib/rancher/rke2/server/manifests
+rke2_kubeconfig_remote: /etc/rancher/rke2/rke2.yaml
+rke2_kubeconfig_local: "{{ playbook_dir }}/../kubeconfig/rke2.yaml"

@@ -1,0 +1,8 @@
+token: {{ rke2_token }}
+server: https://{{ rke2_api_vip }}:9345
+node-ip: {{ ansible_host }}
+
+node-label:
+{% for label in node_labels | default([]) %}
+  - {{ label }}
+{% endfor %}

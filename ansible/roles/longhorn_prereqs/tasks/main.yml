@@ -1,0 +1,59 @@
+---
+- name: Install Longhorn prerequisites
+  ansible.builtin.apt:
+    name: "{{ longhorn_packages }}"
+    state: present
+    update_cache: true
+
+- name: Enable iscsid
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
+
+- name: Ensure multipath drop-in dir exists
+  ansible.builtin.file:
+    path: /etc/multipath/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Blacklist Longhorn devices from multipath
+  ansible.builtin.template:
+    src: multipath.conf.j2
+    dest: /etc/multipath/conf.d/longhorn.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check Longhorn data device exists
+  ansible.builtin.stat:
+    path: "{{ longhorn_data_device }}"
+  register: lh_device
+
+- name: Fail loudly if extra disk is missing
+  ansible.builtin.fail:
+    msg: "{{ longhorn_data_device }} not found on {{ inventory_hostname }}. Did Tofu attach the second disk?"
+  when: not lh_device.stat.exists
+
+- name: Format Longhorn data device as ext4
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ longhorn_data_device }}"
+
+- name: Ensure Longhorn mount point exists
+  ansible.builtin.file:
+    path: "{{ longhorn_data_mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Mount Longhorn data device
+  ansible.posix.mount:
+    path: "{{ longhorn_data_mount }}"
+    src: "{{ longhorn_data_device }}"
+    fstype: ext4
+    opts: defaults,nofail
+    state: mounted

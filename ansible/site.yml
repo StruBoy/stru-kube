@@ -1,0 +1,64 @@
+---
+- name: Base OS prep on all cluster nodes
+  hosts: rke2_cluster
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+      tags: [common]
+
+- name: Longhorn prerequisites on worker nodes
+  hosts: rke2_agents
+  become: true
+  roles:
+    - role: longhorn_prereqs
+      tags: [longhorn-prereqs]
+
+- name: Drop kube-vip static-pod manifest on control plane (before RKE2 starts)
+  hosts: rke2_servers
+  become: true
+  roles:
+    - role: kube_vip
+      tags: [kube-vip]
+
+- name: Bootstrap first RKE2 server
+  hosts: rke2_first
+  become: true
+  roles:
+    - role: rke2_server
+      tags: [rke2-server, rke2-bootstrap]
+
+- name: Wait for API VIP before joining remaining servers
+  hosts: rke2_first
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Wait for kube-vip to claim {{ rke2_api_vip }}:6443
+      ansible.builtin.wait_for:
+        host: "{{ rke2_api_vip }}"
+        port: 6443
+        timeout: 300
+      delegate_to: localhost
+      tags: [kube-vip, rke2-server]
+
+- name: Join remaining RKE2 servers
+  hosts: rke2_servers:!rke2_first
+  become: true
+  serial: 1
+  roles:
+    - role: rke2_server
+      tags: [rke2-server]
+
+- name: Install RKE2 agents (workers)
+  hosts: rke2_agents
+  become: true
+  roles:
+    - role: rke2_agent
+      tags: [rke2-agent]
+
+- name: Post-install (fetch kubeconfig, label nodes)
+  hosts: rke2_first
+  become: true
+  roles:
+    - role: post_install
+      tags: [post-install]

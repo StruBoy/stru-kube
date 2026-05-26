@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+# All defaults from variables.tf already match the homelab plan; override only what you need.
+
+# pve_hosts = {
+#   pve1 = "10.74.2.20"
+#   pve2 = "10.74.2.21"
+#   pve3 = "10.74.2.22"
+# }
+
+# gateway     = "10.74.2.1"
+# dns_servers = ["10.74.2.1", "1.1.1.1"]
+# api_vip     = "10.74.2.29"
+
+# ssh_public_key_file  = "~/.ssh/id_ed25519.pub"
+# ssh_private_key_file = "~/.ssh/id_ed25519"
+
+# Override sizing if your PVE hosts are constrained:
+# control_plane = [
+#   { name = "cp1", host = "pve1", vmid = 110, ip = "10.74.2.30", cpu = 2, ram = 2048, disk = 30 },
+#   { name = "cp2", host = "pve2", vmid = 120, ip = "10.74.2.31", cpu = 2, ram = 2048, disk = 30 },
+#   { name = "cp3", host = "pve3", vmid = 130, ip = "10.74.2.32", cpu = 2, ram = 2048, disk = 30 },
+# ]

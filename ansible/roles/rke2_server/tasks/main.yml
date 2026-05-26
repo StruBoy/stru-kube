@@ -1,0 +1,50 @@
+---
+- name: Ensure /etc/rancher/rke2 exists
+  ansible.builtin.file:
+    path: /etc/rancher/rke2
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render RKE2 server config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/rke2/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install RKE2 (server)
+  ansible.builtin.shell:
+    cmd: "curl -sfL {{ rke2_install_url }} | INSTALL_RKE2_CHANNEL={{ rke2_channel }} {{ ('INSTALL_RKE2_VERSION=' ~ rke2_version) if rke2_version | length > 0 else '' }} sh -"
+    creates: /usr/local/bin/rke2
+
+- name: Enable and start rke2-server
+  ansible.builtin.systemd:
+    name: rke2-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for node-token to exist (server fully initialized)
+  ansible.builtin.wait_for:
+    path: /var/lib/rancher/rke2/server/node-token
+    timeout: 600
+
+- name: Wait for local kubeconfig
+  ansible.builtin.wait_for:
+    path: /etc/rancher/rke2/rke2.yaml
+    timeout: 300
+
+- name: Wait for this node to be Ready
+  ansible.builtin.shell: |
+    /var/lib/rancher/rke2/bin/kubectl \
+      --kubeconfig /etc/rancher/rke2/rke2.yaml \
+      get node {{ inventory_hostname }} \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready
+  changed_when: false
+  retries: 60
+  delay: 5
+  until: node_ready.stdout == "True"

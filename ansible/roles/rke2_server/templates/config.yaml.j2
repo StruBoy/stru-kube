@@ -1,0 +1,26 @@
+token: {{ rke2_token }}
+write-kubeconfig-mode: "0644"
+disable-cloud-controller: true
+cluster-cidr: {{ cluster_cidr }}
+service-cidr: {{ service_cidr }}
+cluster-domain: {{ cluster_domain }}
+cni: {{ cni }}
+
+tls-san:
+  - {{ rke2_api_vip }}
+{% for h in groups['rke2_servers'] %}
+  - {{ hostvars[h].ansible_host }}
+{% endfor %}
+  - k8s.{{ hostvars[groups['rke2_first'][0]].cluster_domain | default('lan') }}
+
+disable:
+{% for c in rke2_disable_components %}
+  - {{ c }}
+{% endfor %}
+
+node-ip: {{ ansible_host }}
+advertise-address: {{ ansible_host }}
+
+{% if inventory_hostname != groups['rke2_first'][0] %}
+server: https://{{ rke2_api_vip }}:9345
+{% endif %}

@@ -1,0 +1,33 @@
+---
+# Tear RKE2 off the nodes cleanly. Leaves the VMs in place; rerun site.yml to rebuild.
+- name: Uninstall RKE2 agents
+  hosts: rke2_agents
+  become: true
+  tasks:
+    - name: Run rke2-uninstall script if present
+      ansible.builtin.command: /usr/local/bin/rke2-agent-uninstall.sh
+      args:
+        removes: /usr/local/bin/rke2-agent-uninstall.sh
+      register: result
+      failed_when: result.rc != 0 and result.rc != 127
+
+- name: Uninstall RKE2 servers
+  hosts: rke2_servers
+  become: true
+  tasks:
+    - name: Run rke2-uninstall script if present
+      ansible.builtin.command: /usr/local/bin/rke2-uninstall.sh
+      args:
+        removes: /usr/local/bin/rke2-uninstall.sh
+      register: result
+      failed_when: result.rc != 0 and result.rc != 127
+
+    - name: Remove kube-vip static-pod manifest
+      ansible.builtin.file:
+        path: "{{ rke2_manifests_dir }}/kube-vip.yaml"
+        state: absent
+
+    - name: Remove Traefik override manifest
+      ansible.builtin.file:
+        path: "{{ rke2_manifests_dir }}/rke2-traefik-config.yaml"
+        state: absent

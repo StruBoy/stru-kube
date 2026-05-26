@@ -1,0 +1,4 @@
+---
+rke2_install_url: https://get.rke2.io
+rke2_disable_components:
+  - rke2-servicelb     # MetalLB owns LoadBalancer IPs

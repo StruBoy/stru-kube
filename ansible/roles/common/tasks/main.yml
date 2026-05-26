@@ -1,0 +1,66 @@
+---
+- name: Set timezone to UTC
+  community.general.timezone:
+    name: UTC
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable chrony
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started
+
+- name: Persist required kernel modules
+  ansible.builtin.template:
+    src: k8s-modules.conf.j2
+    dest: /etc/modules-load.d/k8s.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Load kernel modules now
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: "{{ common_kernel_modules }}"
+
+- name: Apply Kubernetes sysctls
+  ansible.builtin.template:
+    src: 99-kubernetes.conf.j2
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload sysctl
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  when: ansible_facts.swaptotal_mb | default(0) | int > 0
+  changed_when: ansible_facts.swaptotal_mb | default(0) | int > 0
+
+- name: Remove swap entries from fstab
+  ansible.posix.mount:
+    name: "{{ item }}"
+    fstype: swap
+    state: absent
+  loop:
+    - none
+    - swap
+    - /swap.img
+
+- name: Stop and disable UFW (RKE2 manages iptables)
+  ansible.builtin.systemd:
+    name: ufw
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

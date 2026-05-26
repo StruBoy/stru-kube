@@ -1,0 +1,26 @@
+#cloud-config
+hostname: ${name}
+fqdn: ${name}.${domain}
+manage_etc_hosts: true
+preserve_hostname: false
+
+users:
+  - name: ${ssh_user}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: [sudo, adm]
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_pubkey}
+
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - curl
+  - jq
+  - ca-certificates
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - [ sh, -c, "echo 'cloud-init done' > /var/log/cloud-init-stru-kube.done" ]

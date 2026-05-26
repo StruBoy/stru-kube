@@ -1,0 +1,26 @@
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/address-pool: default-pool
+    ports:
+      web:
+        redirectTo:
+          port: websecure
+          priority: 10
+      websecure:
+        tls:
+          enabled: true
+    providers:
+      kubernetesCRD:
+        allowCrossNamespace: true
+    ingressRoute:
+      dashboard:
+        enabled: false

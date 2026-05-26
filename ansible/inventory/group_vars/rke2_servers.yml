@@ -1,0 +1,3 @@
+---
+rke2_role: server
+rke2_service: rke2-server

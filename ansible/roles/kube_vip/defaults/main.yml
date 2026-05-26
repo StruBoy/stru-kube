@@ -1,0 +1,4 @@
+---
+kube_vip_image: ghcr.io/kube-vip/kube-vip:v0.8.7
+kube_vip_interface: eth0
+kube_vip_rbac_url: https://kube-vip.io/manifests/rbac.yaml

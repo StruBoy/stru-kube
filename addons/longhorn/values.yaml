@@ -1,0 +1,21 @@
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 3
+  reclaimPolicy: Delete
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  storageOverProvisioningPercentage: 100
+  storageMinimalAvailablePercentage: 10
+  createDefaultDiskLabeledNodes: true
+
+longhornManager:
+  nodeSelector:
+    longhorn: "true"
+
+longhornDriver:
+  nodeSelector:
+    longhorn: "true"
+
+longhornUI:
+  replicas: 1
