@@ -6,12 +6,27 @@ metadata:
   namespace: kube-system
 spec:
   hostNetwork: true
+  # kube-vip resolves "kubernetes" via DNS before the VIP is up; map it to the
+  # local API server so it can acquire the leader-election lease.
+  hostAliases:
+    - ip: "127.0.0.1"
+      hostnames:
+        - "kubernetes"
+        - "kubernetes.default"
+        - "kubernetes.default.svc"
+        - "kubernetes.default.svc.cluster.local"
   containers:
     - name: kube-vip
       image: {{ kube_vip_image }}
       imagePullPolicy: IfNotPresent
       args: [manager]
       env:
+        # Point in-cluster client at the local API so kube-vip doesn't try
+        # to resolve "kubernetes" DNS before the VIP is up.
+        - name: KUBERNETES_SERVICE_HOST
+          value: "127.0.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "6443"
         - name: vip_arp
           value: "true"
         - name: port
@@ -48,3 +63,4 @@ spec:
     - name: kubeconfig
       hostPath:
         path: /etc/rancher/rke2/rke2.yaml
+        type: File

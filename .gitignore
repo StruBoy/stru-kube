@@ -19,6 +19,7 @@ terraform.tfvars
 # Ansible
 *.retry
 ansible/inventory/hosts.ini
+ansible/.facts_cache/
 .ansible/
 
 # Kubeconfig
@@ -32,3 +33,6 @@ kubeconfig/*.yml
 .idea/
 *.swp
 *.swo
+
+# Claude Code — personal-only overrides (team-shared settings.json may be committed)
+.claude/settings.local.json

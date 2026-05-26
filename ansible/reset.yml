@@ -27,7 +27,7 @@
         path: "{{ rke2_manifests_dir }}/kube-vip.yaml"
         state: absent
 
-    - name: Remove Traefik override manifest
+    - name: Remove legacy Traefik override manifest (older versions of this repo dropped one)
       ansible.builtin.file:
         path: "{{ rke2_manifests_dir }}/rke2-traefik-config.yaml"
         state: absent

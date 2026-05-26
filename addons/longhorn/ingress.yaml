@@ -1,25 +1,23 @@
 ---
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: longhorn-auth
-  namespace: longhorn-system
-spec:
-  basicAuth:
-    secret: longhorn-ui-auth
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
   name: longhorn-ui
   namespace: longhorn-system
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: longhorn-ui-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Longhorn UI"
 spec:
-  entryPoints: [web, websecure]
-  routes:
-    - match: Host(`{{ longhorn_ui_host }}`)
-      kind: Rule
-      services:
-        - name: longhorn-frontend
-          port: 80
-      middlewares:
-        - name: longhorn-auth
+  ingressClassName: nginx
+  rules:
+    - host: {{ longhorn_ui_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: longhorn-frontend
+                port:
+                  number: 80

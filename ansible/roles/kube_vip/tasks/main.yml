@@ -23,3 +23,7 @@
     owner: root
     group: root
     mode: "0600"
+  notify: restart kube-vip pod
+
+- name: Flush handlers (recreate kube-vip pod if manifest changed)
+  ansible.builtin.meta: flush_handlers

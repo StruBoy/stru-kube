@@ -1,10 +1,10 @@
 variable "pve_hosts" {
-  description = "Map of Proxmox node name to its management IP. Templates are built once per host."
+  description = "Map of Proxmox node name (as it appears in /etc/pve/.members) to its management IP. Templates are built once per host."
   type        = map(string)
   default = {
-    pve1 = "10.74.2.20"
-    pve2 = "10.74.2.21"
-    pve3 = "10.74.2.22"
+    stru-prox0 = "10.74.2.20"
+    stru-prox1 = "10.74.2.21"
+    stru-prox2 = "10.74.2.22"
   }
 }
 
@@ -104,9 +104,9 @@ variable "control_plane" {
     disk = number
   }))
   default = [
-    { name = "cp1", host = "pve1", vmid = 110, ip = "10.74.2.30", cpu = 2, ram = 4096, disk = 40 },
-    { name = "cp2", host = "pve2", vmid = 120, ip = "10.74.2.31", cpu = 2, ram = 4096, disk = 40 },
-    { name = "cp3", host = "pve3", vmid = 130, ip = "10.74.2.32", cpu = 2, ram = 4096, disk = 40 },
+    { name = "cp1", host = "stru-prox0", vmid = 110, ip = "10.74.2.30", cpu = 2, ram = 4096, disk = 40 },
+    { name = "cp2", host = "stru-prox1", vmid = 120, ip = "10.74.2.31", cpu = 2, ram = 4096, disk = 40 },
+    { name = "cp3", host = "stru-prox2", vmid = 130, ip = "10.74.2.32", cpu = 2, ram = 4096, disk = 40 },
   ]
 }
 
@@ -123,9 +123,9 @@ variable "workers" {
     extra_disk = number
   }))
   default = [
-    { name = "w1", host = "pve1", vmid = 111, ip = "10.74.2.33", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
-    { name = "w2", host = "pve2", vmid = 121, ip = "10.74.2.34", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
-    { name = "w3", host = "pve3", vmid = 131, ip = "10.74.2.35", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
+    { name = "w1", host = "stru-prox0", vmid = 111, ip = "10.74.2.33", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
+    { name = "w2", host = "stru-prox1", vmid = 121, ip = "10.74.2.34", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
+    { name = "w3", host = "stru-prox2", vmid = 131, ip = "10.74.2.35", cpu = 4, ram = 8192, disk = 80, extra_disk = 100 },
   ]
 }
 

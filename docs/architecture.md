@@ -10,9 +10,9 @@
                                            │
         ┌──────────────────────────────────┼──────────────────────────────────┐
         │                                  │                                  │
-   ┌────┴────┐                        ┌────┴────┐                        ┌────┴────┐
-   │  pve1   │ 10.74.2.20             │  pve2   │ 10.74.2.21             │  pve3   │ 10.74.2.22
-   └────┬────┘                        └────┬────┘                        └────┬────┘
+   ┌────┴───────┐                     ┌────┴───────┐                     ┌────┴───────┐
+   │stru-prox0  │ 10.74.2.20          │stru-prox1  │ 10.74.2.21          │stru-prox2  │ 10.74.2.22
+   └────┬───────┘                     └────┬───────┘                     └────┬───────┘
         │                                  │                                  │
    ┌────┴──────┐                      ┌────┴──────┐                      ┌────┴──────┐
    │ cp1 .30   │ control-plane        │ cp2 .31   │ control-plane        │ cp3 .32   │ control-plane
@@ -21,43 +21,49 @@
 
                         API VIP 10.74.2.29 (kube-vip, floats across cp1-3)
                         MetalLB LB pool: 10.74.2.200 – 10.74.2.220
+                        Ingress: rke2-ingress-nginx DaemonSet, hostPort 80/443 on every node
 ```
 
 ## IP map
 
-| Role             | Name | Host | VMID | IP            | Notes                     |
-|------------------|------|------|------|---------------|---------------------------|
-| control-plane    | cp1  | pve1 | 110  | 10.74.2.30    | rke2-server               |
-| control-plane    | cp2  | pve2 | 120  | 10.74.2.31    | rke2-server               |
-| control-plane    | cp3  | pve3 | 130  | 10.74.2.32    | rke2-server               |
-| worker           | w1   | pve1 | 111  | 10.74.2.33    | rke2-agent, longhorn=true |
-| worker           | w2   | pve2 | 121  | 10.74.2.34    | rke2-agent, longhorn=true |
-| worker           | w3   | pve3 | 131  | 10.74.2.35    | rke2-agent, longhorn=true |
-| K8s API VIP      | —    | —    | —    | 10.74.2.29    | kube-vip ARP              |
-| MetalLB pool     | —    | —    | —    | 10.74.2.200–220 | LoadBalancer services    |
+| Role             | Name | Host         | VMID | IP            | Notes                     |
+|------------------|------|--------------|------|---------------|---------------------------|
+| control-plane    | cp1  | stru-prox0   | 110  | 10.74.2.30    | rke2-server               |
+| control-plane    | cp2  | stru-prox1   | 120  | 10.74.2.31    | rke2-server               |
+| control-plane    | cp3  | stru-prox2   | 130  | 10.74.2.32    | rke2-server               |
+| worker           | w1   | stru-prox0   | 111  | 10.74.2.33    | rke2-agent, longhorn=true |
+| worker           | w2   | stru-prox1   | 121  | 10.74.2.34    | rke2-agent, longhorn=true |
+| worker           | w3   | stru-prox2   | 131  | 10.74.2.35    | rke2-agent, longhorn=true |
+| K8s API VIP      | —    | —            | —    | 10.74.2.29    | kube-vip ARP              |
+| MetalLB pool     | —    | —            | —    | 10.74.2.200–220 | LoadBalancer services    |
 
 Pod CIDR `10.42.0.0/16`, Service CIDR `10.43.0.0/16`, cluster DNS suffix `cluster.local`.
+
+> Node names are whatever PVE knows them as (see `pvesh get /nodes` or `/etc/pve/.members`). If your cluster uses different names, override `pve_hosts` in a `terraform.tfvars` file.
 
 ## Component stack
 
 | Layer              | Choice                                                |
 |--------------------|-------------------------------------------------------|
-| Hypervisor         | Proxmox VE 8                                          |
+| Hypervisor         | Proxmox VE 8/9                                        |
 | Guest OS           | Ubuntu 24.04 (cloud image)                            |
 | Provisioning       | OpenTofu + `bpg/proxmox`                              |
 | Configuration      | Ansible (community.general, ansible.posix, kubernetes.core) |
 | Kubernetes         | RKE2 (CNCF-certified)                                 |
 | CNI                | Canal (RKE2 default)                                  |
-| API HA             | kube-vip (ARP, static pod)                            |
+| API HA             | kube-vip (ARP, static pod, `hostAliases: kubernetes → 127.0.0.1`) |
 | LoadBalancer       | MetalLB (L2 mode)                                     |
-| Ingress            | Traefik (bundled with RKE2, override via HelmChartConfig) |
+| Ingress            | `rke2-ingress-nginx` (RKE2-bundled, DaemonSet hostPort 80/443) |
 | Storage            | Longhorn (3 replicas, default StorageClass)           |
 
 ## Decisions log
 
 - **bpg/proxmox over Telmate/proxmox.** Telmate has stalled; bpg has native cloud-init, image download, and template modeling.
-- **kube-vip over HAProxy+keepalived.** One static-pod manifest beats two extra daemons + a config file Ansible has to babysit.
-- **Keep RKE2's bundled Traefik.** Avoids managing CRDs and the upgrade path; we customize via `HelmChartConfig`.
+- **`proxmox_virtual_environment_*` resource names retained.** bpg has shorter aliases (`proxmox_vm`, `proxmox_download_file`, `proxmox_file`) marked for v1.0 — but those are a *different schema*, not just a rename. The old names still work and the deprecation is a harmless warning.
+- **kube-vip over HAProxy+keepalived.** One static-pod manifest beats two extra daemons + a config file Ansible has to babysit. The `hostAliases` workaround is the only setup quirk.
+- **rke2-ingress-nginx, not Traefik.** RKE2 ships nginx; Traefik is K3s. Swapping would mean disabling nginx + managing the Traefik chart + CRDs. Nginx as a hostPort DaemonSet means clients hit any node:80/443 directly — MetalLB stays available for app LB services.
 - **Disable RKE2's ServiceLB.** MetalLB owns `type: LoadBalancer` IPs.
 - **Canal over Cilium.** Cilium is materially better for NetworkPolicy at scale, eBPF observability, and BGP — none of which we need in a 6-node homelab. Canal is the default and lowest-friction choice.
 - **Static Ansible inventory written by Tofu.** Dynamic Proxmox inventory adds runtime PVE dependency and duplicates credentials. A flat file is diffable and works offline.
+- **Static IPs from cloud-init (not agent-reported).** `var.control_plane[].ip` / `var.workers[].ip` populate both cloud-init and the Ansible inventory deterministically. Removes any dependence on `qemu-guest-agent` returning addresses to `tofu refresh`.
+- **`.env` sourced via the Makefile.** Running `ansible-playbook` directly without env vars makes `lookup('env','RKE2_TOKEN')` return empty; rendered configs lose the token. `make` targets source `.env` first.

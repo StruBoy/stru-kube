@@ -2,9 +2,9 @@
 
 ## Context
 
-Build a LAN-hosted, HA Kubernetes cluster on an existing 3-node Proxmox VE cluster (`pve1` 10.74.2.20, `pve2` 10.74.2.21, `pve3` 10.74.2.22), provisioned end-to-end by OpenTofu (infra) and Ansible (configuration). Outcome: a 6-VM RKE2 cluster (3 control-plane + 3 workers, one of each per Proxmox host) with HA control-plane VIP, Longhorn storage, MetalLB LoadBalancer pool, and Traefik ingress — reproducible from a clean checkout.
+Build a LAN-hosted, HA Kubernetes cluster on an existing 3-node Proxmox VE cluster (`stru-prox0` 10.74.2.20, `stru-prox1` 10.74.2.21, `stru-prox2` 10.74.2.22 — the `stru-cluster` PVE cluster), provisioned end-to-end by OpenTofu (infra) and Ansible (configuration). Outcome: a 6-VM RKE2 cluster (3 control-plane + 3 workers, one of each per Proxmox host) with HA control-plane VIP, Longhorn storage, MetalLB LoadBalancer pool, and an HTTP ingress controller — reproducible from a clean checkout.
 
-Working directory `/Users/steven/projects/stru-kube/` is empty; this is greenfield.
+Working directory `/Users/steven/projects/stru-kube/` is empty; this is greenfield. **Find your PVE node names** before applying — they must match `pvesh get /nodes`, not "pve1/2/3" placeholders. See [docs/envsetup.md](docs/envsetup.md).
 
 ## Confirmed decisions
 
@@ -15,8 +15,8 @@ Working directory `/Users/steven/projects/stru-kube/` is empty; this is greenfie
 | CNI | RKE2 default Canal (Cilium not justified at this scale) |
 | Storage | Longhorn (replicated, default StorageClass) |
 | LoadBalancer | MetalLB (L2 / ARP mode) |
-| Ingress | RKE2-bundled Traefik (customized via `HelmChartConfig`) |
-| API VIP | kube-vip static pod at `10.74.2.29` |
+| Ingress | RKE2-bundled `rke2-ingress-nginx` (DaemonSet, hostPort 80/443) |
+| API VIP | kube-vip static pod at `10.74.2.29` (with `hostAliases` for `kubernetes` → 127.0.0.1) |
 | PVE storage | `local-lvm` for VM disks, `local` for cloud image + snippets |
 | Bridge | `vmbr0` (flat LAN, untagged) |
 | Base image | Ubuntu 24.04 cloud image |
@@ -69,29 +69,58 @@ stru-kube/
 
 ## Phase 1 — Proxmox prep (one-time manual)
 
-On `pve1` (replicates to cluster):
+On any PVE node (replicates across the cluster):
 
-1. Create API token + role (granular privileges):
+1. **Discover actual node names** — these go into `var.pve_hosts`:
    ```sh
-   pveum role add TerraformProv -privs "VM.Allocate VM.Audit VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.Migrate VM.Monitor VM.PowerMgmt Datastore.AllocateSpace Datastore.AllocateTemplate Datastore.Audit Pool.Allocate Sys.Audit Sys.Console Sys.Modify SDN.Use"
+   ssh root@<pve-ip> 'cat /etc/pve/.members'
+   # Note the keys under "nodelist" — those are the names PVE knows. Not necessarily pve1/2/3.
+   ```
+
+2. Create API token + role (granular privileges — `Datastore.Allocate` is mandatory for the snippet uploader; `VM.Console` replaces the retired `VM.Monitor`):
+   ```sh
+   pveum role add TerraformProv -privs "VM.Allocate VM.Audit VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.Console VM.Migrate VM.PowerMgmt Datastore.Allocate Datastore.AllocateSpace Datastore.AllocateTemplate Datastore.Audit Pool.Allocate Sys.Audit Sys.Console Sys.Modify SDN.Use"
    pveum user add terraform@pve
    pveum aclmod / -user terraform@pve -role TerraformProv
    pveum user token add terraform@pve provisioner --privsep 0
    ```
    Capture the secret — shown once.
 
-2. Enable **Snippets** content type on `local` storage (Datacenter → Storage → local → Content). Cloud-init user-data uploads silently fail without this.
+3. Enable **Snippets** content type on `local` storage (Datacenter → Storage → local → Content). Cloud-init user-data uploads silently fail without this.
 
-3. Verify each host has free space on `local-lvm` for ~180 GiB per worker + 40 GiB per CP (`vgs pve`).
+4. Verify each host has free space on `local-lvm` for ~180 GiB per worker + 40 GiB per CP (`vgs pve`).
+
+5. **Load your SSH key into ssh-agent** — bpg/proxmox only reads from the agent (it ignores `~/.ssh/config`):
+   ```sh
+   ssh-add --apple-use-keychain ~/.ssh/id_ed25519   # macOS
+   # or: ssh-add ~/.ssh/id_ed25519                   # Linux
+   ```
+   Make sure that key is also authorized for `root` on each PVE host (`ssh-copy-id root@<ip>`).
 
 ## Phase 2 — OpenTofu infrastructure
 
-### Provider (`opentofu/providers.tf`)
+### Provider ([opentofu/providers.tf](opentofu/providers.tf))
 `bpg/proxmox` configured from env vars only:
 - `PROXMOX_VE_ENDPOINT` — `https://10.74.2.20:8006/`
 - `PROXMOX_VE_API_TOKEN` — `terraform@pve!provisioner=<uuid>`
 - `PROXMOX_VE_INSECURE=true` (self-signed PVE certs)
 - `PROXMOX_VE_SSH_USERNAME=root`
+
+Plus a `dynamic "node"` block that maps each PVE node name → IP. The workstation has no DNS for `stru-prox0/1/2`, so the provider needs these mappings explicitly to SSH for snippet uploads:
+
+```hcl
+ssh {
+  agent    = true
+  username = "root"
+  dynamic "node" {
+    for_each = var.pve_hosts
+    content {
+      name    = node.key
+      address = node.value
+    }
+  }
+}
+```
 
 ### Template module ([opentofu/modules/template/main.tf](opentofu/modules/template/main.tf))
 Runs **once per PVE host** (3 invocations from root `main.tf`):
@@ -121,12 +150,12 @@ Play sequence (each role tagged for selective re-runs):
 
 2. **`longhorn_prereqs`** on `rke2_agents` — install `open-iscsi`, `nfs-common`, `cryptsetup`, `dmsetup`; enable `iscsid`; drop `/etc/multipath/conf.d/longhorn.conf` blacklist; format `/dev/sdb` ext4 via `community.general.filesystem`; mount on `/var/lib/longhorn` via `ansible.posix.mount` (`defaults,nofail`).
 
-3. **`kube_vip`** on `rke2_servers` (runs **before** RKE2) — render static-pod manifest into `/var/lib/rancher/rke2/server/manifests/kube-vip.yaml` + RBAC. ARP mode, VIP `10.74.2.29` on `eth0`, image `ghcr.io/kube-vip/kube-vip:v0.8.7` (pinned in role defaults). RKE2 picks it up on startup.
+3. **`kube_vip`** on `rke2_servers` (runs **before** RKE2) — render static-pod manifest into `/var/lib/rancher/rke2/server/manifests/kube-vip.yaml` + RBAC. ARP mode, VIP `10.74.2.29` on `eth0`, image `ghcr.io/kube-vip/kube-vip:v0.8.7` (pinned in role defaults). RKE2 picks it up on startup. Manifest also sets `hostAliases` mapping `kubernetes → 127.0.0.1` (kube-vip uses in-cluster client config and otherwise can't resolve the API service DNS before the VIP is up), and a handler in the role deletes the running pod when the manifest changes (pod env vars are immutable).
 
 4. **`rke2_server`** on `rke2_first` (cp1 alone) — bootstrap. `config.yaml` template **omits** the `server:` line when `inventory_hostname == groups['rke2_first'][0]` (otherwise it tries to join itself). Includes:
-   - `token`, `tls-san` (VIP + all CP IPs + `k8s.lan`)
-   - `disable: [rke2-servicelb]` (MetalLB owns LB IPs)
-   - **Keep** bundled Traefik
+   - `token` (pulled from `RKE2_TOKEN` env var via Ansible `lookup('env', ...)` — `.env` MUST be sourced before running, or the token renders empty and `rke2-server.service` fails on every CP)
+   - `tls-san` (VIP + all CP IPs + cluster-domain)
+   - `disable: [rke2-servicelb]` (MetalLB owns LB IPs; keep `rke2-ingress-nginx`)
    - `cluster-cidr: 10.42.0.0/16`, `service-cidr: 10.43.0.0/16`, `cni: canal`
    - `write-kubeconfig-mode: "0644"`, `disable-cloud-controller: true`
    - Install via `curl -sfL https://get.rke2.io | sh -` (`creates:` guard). Enable `rke2-server.service`. Wait for `/etc/rancher/rke2/rke2.yaml` and node Ready via polled `kubectl get nodes`.
@@ -148,13 +177,13 @@ Run from `rke2_first` with delegated local Helm/kubectl using the fetched kubeco
    - Install chart from `https://metallb.github.io/metallb` (version pinned in `group_vars/all.yml`, e.g. `0.14.8`)
    - Apply [addons/metallb/pool.yaml](addons/metallb/pool.yaml): `IPAddressPool` `default-pool` with `10.74.2.200-10.74.2.220` + `L2Advertisement` `default-l2`.
 
-2. **Traefik override** — write [addons/traefik/HelmChartConfig.yaml](addons/traefik/HelmChartConfig.yaml) to `/var/lib/rancher/rke2/server/manifests/rke2-traefik-config.yaml` on cp1. Sets `service.type=LoadBalancer` + `metallb.universe.tf/address-pool: default-pool` annotation; web→websecure redirect; TLS on websecure. RKE2's Helm controller reconciles.
+2. **Ingress** — none required. `rke2-ingress-nginx` ships with RKE2 as a DaemonSet using hostPort 80/443 on every node, so clients hit any node IP directly. MetalLB's pool stays free for app-defined `type: LoadBalancer` services. (RKE2 does **not** bundle Traefik — that's K3s. Switching to Traefik would mean disabling nginx + managing your own chart + CRDs; not worth it for a homelab. The legacy file at [addons/traefik/HelmChartConfig.yaml](addons/traefik/HelmChartConfig.yaml) is unused and kept only as a reference.)
 
 3. **Longhorn**:
    - Create `longhorn-system` namespace
    - Install chart from `https://charts.longhorn.io` (version pinned, e.g. `1.7.2`)
    - Values: `persistence.defaultClass: true`, `defaultClassReplicaCount: 3`, `defaultDataPath: /var/lib/longhorn`, `nodeSelector: {longhorn: "true"}` on manager + driver
-   - Apply [addons/longhorn/ingress.yaml](addons/longhorn/ingress.yaml): Traefik `IngressRoute` for `longhorn.lan` + `BasicAuth` middleware backed by Secret (htpasswd from `LONGHORN_UI_PASS` env via Ansible `lookup('env', ...)`).
+   - Apply [addons/longhorn/ingress.yaml](addons/longhorn/ingress.yaml): standard `networking.k8s.io/v1` Ingress for `longhorn.lan` with `ingressClassName: nginx` and nginx basic-auth annotations (`nginx.ingress.kubernetes.io/auth-type: basic`, `auth-secret: longhorn-ui-auth`). Secret data key is `auth` (nginx format), not `users` (Traefik format). htpasswd generated locally from `LONGHORN_UI_USER`/`LONGHORN_UI_PASS` env vars via `lookup('env', ...)`.
 
 ## Critical files (paths to create)
 
@@ -228,7 +257,7 @@ export KUBECONFIG=$PWD/kubeconfig/rke2.yaml
 kubectl get nodes -o wide
 kubectl get nodes -l longhorn=true
 
-# 2. System pods Running (kube-vip, canal, coredns, traefik, metrics-server, metallb-*, longhorn-*)
+# 2. System pods Running (kube-vip, canal, coredns, rke2-ingress-nginx-*, metrics-server, metallb-*, longhorn-*)
 kubectl get pods -A
 
 # 3. API VIP reachable
@@ -251,8 +280,8 @@ spec:
 EOF
 kubectl get pvc lh-test         # Bound within ~30s, storageClassName=longhorn
 
-# 6. Traefik ingress + basic-auth on longhorn.lan
-curl -H 'Host: longhorn.lan' http://<traefik-external-ip>/   # 401 expected
+# 6. nginx ingress + basic-auth on longhorn.lan (hit any cluster node)
+curl -H 'Host: longhorn.lan' http://10.74.2.30/   # 401 expected
 
 # 7. Control-plane failover — reboot cp1, VIP must move within ~10s
 ssh ubuntu@10.74.2.30 sudo reboot
@@ -267,16 +296,26 @@ All 7 passing = cluster is ready for homelab workloads.
 
 ## Known gotchas (capture in [docs/troubleshooting.md](docs/troubleshooting.md))
 
-1. **bpg/proxmox cloud-init snippet** — `user_data_file_id` requires `content_type = "snippets"` on `local` storage. If snippets aren't enabled in the PVE GUI, cloud-init silently uses PVE defaults, the static IP is never applied, and Ansible can't reach the VM.
-2. **qemu-guest-agent must be installed in the clone, not the template** — without it `agent { enabled = true }` produces empty `ipv4_addresses` and the inventory file comes out malformed. If first apply doesn't populate IPs, `tofu refresh` after ~60s.
-3. **RKE2 service names differ by role** — `rke2-server.service` vs `rke2-agent.service`. Don't unify the variable.
-4. **Bootstrap server must not have `server:` line** — `config.yaml.j2` conditionally omits it for `groups['rke2_first'][0]`.
-5. **Joining servers race kube-vip** — bootstrap play `wait_for`s the VIP being pingable before the next play starts cp2/cp3.
-6. **Longhorn `longhorn=true` label** — set both via RKE2 `node-label:` (survives reboots) and post-install `kubectl label` (works immediately).
-7. **PVE storage content types** — `local` needs `snippets` added; `local-lvm` needs `images` (usually already correct). Document as one-time manual GUI step.
-8. **Ubuntu 24.04 Python** — pin `ansible_python_interpreter=/usr/bin/python3` to suppress discovery warnings.
-9. **Kubeconfig server URL** — RKE2 writes `127.0.0.1`; `post_install` rewrites to the VIP, otherwise local kubectl needs an SSH tunnel.
-10. **`initialization` block changes trigger VM replacement** — don't edit `cloud-init.tftpl` after first apply unless you're prepared to recreate VMs; post-creation OS changes belong to Ansible.
+1. **PVE node names must match `pvesh get /nodes`** — `var.pve_hosts` keys are used directly as `node_name` in API calls. If you guess (`pve1/2/3`) and they're actually `stru-prox0/1/2`, the API returns "hostname lookup failed" 500s. Always check first.
+2. **bpg/proxmox needs `ssh.node` mappings when names aren't DNS-resolvable** — the provider SSHes to the node `name`, not the API endpoint, so each name → IP must be declared (`dynamic "node"` block in `providers.tf`).
+3. **bpg/proxmox SSH only honors `ssh-agent`** — `~/.ssh/config` is ignored ("NOTE: configurations in ~/.ssh/config are not considered"). Run `ssh-add` before `tofu apply`.
+4. **TerraformProv role needs `Datastore.Allocate`** — without it, snippet uploads fail with HTTP 403 `Permission check failed`. Also: `VM.Monitor` was removed in PVE 8; use `VM.Console` instead.
+5. **`bpg/proxmox` resource rename is a schema change, not a rename** — `proxmox_vm` ≠ `proxmox_virtual_environment_vm`. The deprecation warnings on the old names are harmless until v1.0; don't `sed` between them.
+6. **bpg/proxmox cloud-init snippet** — `user_data_file_id` requires `content_type = "snippets"` on `local` storage. If snippets aren't enabled in the PVE GUI, cloud-init silently uses PVE defaults, the static IP is never applied, and Ansible can't reach the VM.
+7. **`RKE2_TOKEN` must be in the env when running ansible** — `lookup('env', 'RKE2_TOKEN')` returns empty otherwise, every CP renders `token: ` (empty) and `rke2-server.service` fails on join nodes with `token is required to join a cluster`. The Makefile auto-sources `.env`; running `ansible-playbook` by hand requires `set -a; source .env; set +a` first.
+8. **kube-vip resolves `kubernetes` via DNS even with `KUBERNETES_SERVICE_HOST` set** — the in-cluster client uses the service DNS name regardless. The fix is `hostAliases` mapping `kubernetes` → `127.0.0.1` in the static-pod manifest; setting env vars alone doesn't help.
+9. **Updating kube-vip env vars requires deleting the pod** — env vars are immutable on running pods. The role has a handler that runs `kubectl delete pod kube-vip` when the manifest template changes; RKE2's addon controller re-applies from the file.
+10. **RKE2 ships `rke2-ingress-nginx`, not Traefik** — Traefik is K3s. The nginx controller is a DaemonSet with hostPort 80/443 (no LoadBalancer service). For Longhorn UI use a standard `Ingress` (not Traefik `IngressRoute`), and the basic-auth Secret key is `auth` (nginx) not `users` (Traefik).
+11. **`community.general.yaml` callback is gone** — removed in v12. Use `stdout_callback=default` + `result_format=yaml` in `ansible.cfg`.
+12. **qemu-guest-agent must be installed in the clone, not the template** — without it `agent { enabled = true }` produces empty `ipv4_addresses` and the inventory file comes out malformed. We sidestep this by using static IPs from variables; if you later switch to agent-reported IPs, run `tofu refresh` after ~60s.
+13. **RKE2 service names differ by role** — `rke2-server.service` vs `rke2-agent.service`. Don't unify the variable.
+14. **Bootstrap server must not have `server:` line** — `config.yaml.j2` conditionally omits it for `groups['rke2_first'][0]`.
+15. **Joining servers race kube-vip** — bootstrap play `wait_for`s the VIP being pingable before the next play starts cp2/cp3.
+16. **Longhorn `longhorn=true` label** — set both via RKE2 `node-label:` (survives reboots) and post-install `kubectl label` (works immediately).
+17. **PVE storage content types** — `local` needs `snippets` added; `local-lvm` needs `images` (usually already correct). Document as one-time manual GUI step.
+18. **Ubuntu 24.04 Python** — pin `ansible_python_interpreter=/usr/bin/python3` to suppress discovery warnings.
+19. **Kubeconfig server URL** — RKE2 writes `127.0.0.1`; `post_install` rewrites to the VIP, otherwise local kubectl needs an SSH tunnel.
+20. **`initialization` block changes trigger VM replacement** — don't edit `cloud-init.tftpl` after first apply unless you're prepared to recreate VMs; post-creation OS changes belong to Ansible.
 
 ## Secrets (in `.env`, never committed)
 

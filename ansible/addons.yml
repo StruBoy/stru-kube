@@ -1,5 +1,5 @@
 ---
-- name: Install cluster addons (MetalLB, Longhorn, Traefik override)
+- name: Install cluster addons (MetalLB, Longhorn) — ingress uses bundled rke2-ingress-nginx
   hosts: rke2_first
   become: false
   gather_facts: false
@@ -66,16 +66,9 @@
       delegate_to: localhost
       tags: [metallb]
 
-    # --- Traefik override (RKE2-bundled) ---
-    - name: Render Traefik HelmChartConfig into RKE2 manifests dir
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../addons/traefik/HelmChartConfig.yaml"
-        dest: "{{ rke2_manifests_dir }}/rke2-traefik-config.yaml"
-        owner: root
-        group: root
-        mode: "0600"
-      become: true
-      tags: [traefik]
+    # NOTE: RKE2 ships rke2-ingress-nginx (not Traefik); the bundled controller
+    # runs as a DaemonSet with hostPort 80/443, so no LoadBalancer service is
+    # needed for ingress. MetalLB's pool stays available for app LB services.
 
     # --- Longhorn ---
     - name: Create longhorn-system namespace
@@ -111,16 +104,16 @@
       delegate_to: localhost
       tags: [longhorn]
 
-    - name: Generate htpasswd for Longhorn UI
+    - name: Generate htpasswd for Longhorn UI (nginx ingress basic-auth format)
       ansible.builtin.shell: |
-        printf "%s:%s" "{{ longhorn_ui_user }}" "$(openssl passwd -apr1 '{{ longhorn_ui_pass }}')"
+        printf "%s:%s\n" "{{ longhorn_ui_user }}" "$(openssl passwd -apr1 '{{ longhorn_ui_pass }}')"
       register: longhorn_htpasswd
       changed_when: false
       no_log: true
       delegate_to: localhost
       tags: [longhorn]
 
-    - name: Create Longhorn UI basic-auth Secret
+    - name: Create Longhorn UI basic-auth Secret (nginx expects key 'auth')
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig }}"
         state: present
@@ -132,7 +125,7 @@
             namespace: longhorn-system
           type: Opaque
           stringData:
-            users: "{{ longhorn_htpasswd.stdout }}"
+            auth: "{{ longhorn_htpasswd.stdout }}"
       delegate_to: localhost
       no_log: true
       tags: [longhorn]
