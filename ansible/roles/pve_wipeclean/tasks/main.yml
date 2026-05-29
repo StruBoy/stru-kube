@@ -1,0 +1,155 @@
+---
+# Wipe everything bootstrap-pve + tofu apply created.
+# All cluster-level pveum/pvesm tasks use run_once: true — PVE state replicates.
+# Per-host tasks (snippet/image sweep) run on every node.
+
+- name: Confirm we're on a PVE node
+  ansible.builtin.command: pveversion
+  changed_when: false
+  run_once: true
+
+# ---------- 1. VMs (cluster VMs + per-host templates) ----------
+
+- name: List all VMs across the PVE cluster
+  ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+  register: cluster_vms_raw
+  changed_when: false
+  run_once: true
+
+- name: Identify wipe targets (k8s-tagged + template VMIDs)
+  ansible.builtin.set_fact:
+    target_vms: >-
+      {{
+        ( cluster_vms_raw.stdout | from_json
+          | selectattr('type', 'equalto', 'qemu')
+          | selectattr('vmid', 'in', wipeclean_template_vmids)
+          | list )
+        +
+        ( cluster_vms_raw.stdout | from_json
+          | selectattr('type', 'equalto', 'qemu')
+          | rejectattr('tags', 'undefined')
+          | selectattr('tags', 'search', '(^|;)' ~ wipeclean_vm_tag ~ '(;|$)')
+          | list )
+      }}
+  run_once: true
+
+- name: Show what will be destroyed
+  ansible.builtin.debug:
+    msg: "Will destroy {{ target_vms | length }} VM(s): {{ target_vms | map(attribute='vmid') | list }}"
+  run_once: true
+
+- name: Stop running target VMs
+  ansible.builtin.command: >-
+    pvesh create /nodes/{{ item.node }}/qemu/{{ item.vmid }}/status/stop
+  loop: "{{ target_vms | selectattr('status', 'equalto', 'running') | list }}"
+  loop_control:
+    label: "{{ item.vmid }} ({{ item.name | default('?') }}) on {{ item.node }}"
+  run_once: true
+  failed_when: false
+  changed_when: true
+
+- name: Wait for VMs to stop
+  ansible.builtin.pause:
+    seconds: 8
+  when: target_vms | selectattr('status', 'equalto', 'running') | list | length > 0
+  run_once: true
+
+- name: Destroy target VMs (purge + disks)
+  ansible.builtin.command: >-
+    pvesh delete /nodes/{{ item.node }}/qemu/{{ item.vmid }}
+    --purge 1
+    --destroy-unreferenced-disks 1
+  loop: "{{ target_vms }}"
+  loop_control:
+    label: "{{ item.vmid }} ({{ item.name | default('?') }}) on {{ item.node }}"
+  run_once: true
+  failed_when: false
+  changed_when: true
+
+# ---------- 2. terraform@pve token, user, ACL, role ----------
+
+- name: Remove '{{ pve_token_name }}' token from {{ pve_user }}
+  ansible.builtin.command: pveum user token remove {{ pve_user }} {{ pve_token_name }}
+  failed_when: false
+  changed_when: false
+  run_once: true
+
+- name: Remove {{ pve_user }} user (cascades the ACL)
+  ansible.builtin.command: pveum user delete {{ pve_user }}
+  failed_when: false
+  changed_when: false
+  run_once: true
+
+- name: Remove {{ pve_role_name }} role
+  ansible.builtin.command: pveum role delete {{ pve_role_name }}
+  failed_when: false
+  changed_when: false
+  run_once: true
+
+# ---------- 3. Storage content: drop 'snippets' from local ----------
+
+- name: Read current content types on storage '{{ pve_local_storage }}'
+  ansible.builtin.command: pvesh get /storage/{{ pve_local_storage }} --output-format json
+  register: pve_local_raw
+  changed_when: false
+  failed_when: false
+  run_once: true
+
+- name: Revert {{ pve_local_storage }} content to PVE defaults (skips if already reverted)
+  ansible.builtin.command: >-
+    pvesm set {{ pve_local_storage }} --content {{ pve_default_content }}
+  when: >-
+    pve_local_raw.stdout | default('') | length > 0
+    and (pve_local_raw.stdout | from_json).content | default('')
+        | split(',') | map('trim') | sort
+        != (pve_default_content | split(',') | map('trim') | sort)
+  run_once: true
+
+# ---------- 4. Cloud image cleanup (per-node — local storage is node-local) ----------
+
+- name: List ISO/image content on {{ pve_local_storage }}
+  ansible.builtin.command: >-
+    pvesh get /nodes/{{ ansible_facts['hostname'] }}/storage/{{ pve_local_storage }}/content
+    --output-format json
+  register: local_content_raw
+  changed_when: false
+  failed_when: false
+
+- name: Delete downloaded Ubuntu cloud images
+  ansible.builtin.command: >-
+    pvesh delete /nodes/{{ ansible_facts['hostname'] }}/storage/{{ pve_local_storage }}/content/{{ item.volid }}
+  loop: >-
+    {{ (local_content_raw.stdout | default('[]') | from_json)
+       | selectattr('volid', 'search', pve_cloud_image_pattern) | list }}
+  loop_control:
+    label: "{{ item.volid }} on {{ ansible_facts['hostname'] }}"
+  failed_when: false
+  changed_when: true
+
+# ---------- 5. Snippet sweep (per-node) ----------
+
+- name: Find leftover cloud-init snippet files
+  ansible.builtin.find:
+    paths: "{{ pve_snippets_dir }}"
+    patterns:
+      - "*cloud-init*.yaml"
+      - "*-user-data*.yaml"
+      - "vm-*.yaml"
+    file_type: file
+  register: snippets_found
+  failed_when: false
+
+- name: Remove cloud-init snippet files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ snippets_found.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "PVE wipeclean complete on {{ ansible_facts['hostname'] }}."
+      - "Re-run `make bootstrap-pve` to set the cluster back up for deployment."
+  run_once: true

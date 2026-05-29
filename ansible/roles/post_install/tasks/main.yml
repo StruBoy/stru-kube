@@ -38,6 +38,26 @@
   loop: "{{ groups['rke2_agents'] }}"
   changed_when: false
 
+# Confirm the label actually stuck — Longhorn's nodeSelector won't schedule
+# manager/driver pods on workers missing this label, which manifests later as
+# "no available longhorn nodes" rather than as a labeling error.
+- name: Read longhorn label on each worker
+  ansible.builtin.shell: |
+    {{ rke2_kubectl }} --kubeconfig {{ rke2_kubeconfig_remote }} \
+      get node {{ item }} -o jsonpath='{.metadata.labels.longhorn}'
+  loop: "{{ groups['rke2_agents'] }}"
+  register: longhorn_labels
+  changed_when: false
+
+- name: Assert every worker has longhorn=true
+  ansible.builtin.assert:
+    that:
+      - item.stdout == 'true'
+    fail_msg: "Worker {{ item.item }} is missing longhorn=true label (got: '{{ item.stdout }}')"
+  loop: "{{ longhorn_labels.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Print kubeconfig path
   ansible.builtin.debug:
     msg: "Kubeconfig fetched to {{ rke2_kubeconfig_local }} — `export KUBECONFIG={{ rke2_kubeconfig_local }}`"

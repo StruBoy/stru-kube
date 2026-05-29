@@ -1,0 +1,19 @@
+---
+# DESTRUCTIVE: returns the Proxmox cluster to a virgin state.
+# Removes:
+#   - all 6 cluster VMs + 3 templates (by k8s tag + template VMIDs)
+#   - the terraform@pve user, its 'provisioner' token, and the TerraformProv role
+#   - the 'snippets' content type from `local` storage
+#   - downloaded Ubuntu cloud images
+#   - leftover cloud-init snippet files under /var/lib/vz/snippets/
+#
+# Idempotent — safe to re-run, and safe to run against an already-clean cluster.
+# Invoke via `make wipeclean CONFIRM=yes`, which runs `tofu destroy` first.
+
+- name: Wipe Proxmox-side state created by stru-kube
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: true   # need ansible_facts.hostname for per-node storage paths
+  roles:
+    - role: pve_wipeclean
+      tags: [pve-wipeclean]

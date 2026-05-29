@@ -1,0 +1,143 @@
+---
+# All tasks here use run_once: true because PVE state (users, roles, storage
+# config) replicates across the cluster — we only need to touch one node.
+# `become: true` is set at the playbook level.
+
+- name: Confirm we're on a PVE node
+  ansible.builtin.command: pveversion
+  register: pve_version_check
+  changed_when: false
+  run_once: true
+
+- name: Read /etc/pve/.members
+  ansible.builtin.slurp:
+    src: /etc/pve/.members
+  register: pve_members_raw
+  run_once: true
+
+- name: Extract actual node names from cluster membership
+  ansible.builtin.set_fact:
+    actual_pve_nodes: >-
+      {{ (pve_members_raw.content | b64decode | from_json).nodelist.keys()
+         | list | sort }}
+  run_once: true
+
+- name: Assert configured PVE node names match the live cluster
+  ansible.builtin.assert:
+    that:
+      - actual_pve_nodes == (expected_pve_nodes | sort)
+    fail_msg: |
+      Mismatch between configured and actual PVE node names.
+        expected (var.pve_hosts / role default): {{ expected_pve_nodes | sort }}
+        actual   (/etc/pve/.members nodelist):   {{ actual_pve_nodes }}
+      Fix one of:
+        - update var.pve_hosts in opentofu/variables.tf or terraform.tfvars
+        - rename your PVE nodes, OR
+        - override at the CLI: ansible-playbook ... -e '{"expected_pve_nodes":[...]}'
+    success_msg: "PVE node names match: {{ actual_pve_nodes }}"
+  run_once: true
+
+# ---------- TerraformProv role ----------
+
+- name: List existing roles
+  ansible.builtin.command: pveum role list --output-format json
+  register: pve_roles_raw
+  changed_when: false
+  run_once: true
+
+- name: Create TerraformProv role if missing
+  ansible.builtin.command: >-
+    pveum role add {{ pve_role_name }}
+    -privs "{{ pve_role_privs | join(' ') }}"
+  when: >-
+    pve_role_name not in
+      (pve_roles_raw.stdout | from_json | map(attribute='roleid') | list)
+  run_once: true
+
+- name: Sync TerraformProv role privileges (idempotent, ensures no drift)
+  ansible.builtin.command: >-
+    pveum role modify {{ pve_role_name }}
+    -privs "{{ pve_role_privs | join(',') }}"
+  when: >-
+    pve_role_name in
+      (pve_roles_raw.stdout | from_json | map(attribute='roleid') | list)
+  changed_when: false  # can't reliably detect drift without parsing all privs
+  run_once: true
+
+# ---------- terraform@pve user + ACL ----------
+
+- name: List existing users
+  ansible.builtin.command: pveum user list --output-format json
+  register: pve_users_raw
+  changed_when: false
+  run_once: true
+
+- name: Create {{ pve_user }} if missing
+  ansible.builtin.command: >-
+    pveum user add {{ pve_user }} --comment "OpenTofu service account"
+  when: >-
+    pve_user not in
+      (pve_users_raw.stdout | from_json | map(attribute='userid') | list)
+  run_once: true
+
+- name: Grant {{ pve_role_name }} to {{ pve_user }} at /
+  ansible.builtin.command: >-
+    pveum aclmod / -user {{ pve_user }} -role {{ pve_role_name }}
+  changed_when: false  # aclmod is idempotent server-side; suppress noise
+  run_once: true
+
+# ---------- Snippets on local storage ----------
+
+- name: Read current content types on storage '{{ pve_local_storage }}'
+  ansible.builtin.command: pvesh get /storage/{{ pve_local_storage }} --output-format json
+  register: pve_local_raw
+  changed_when: false
+  run_once: true
+
+- name: Set content types on '{{ pve_local_storage }}' (adds 'snippets')
+  ansible.builtin.command: >-
+    pvesm set {{ pve_local_storage }} --content {{ pve_local_content }}
+  when: >-
+    (pve_local_raw.stdout | from_json).content | default('')
+      | split(',') | map('trim') | sort
+      != (pve_local_content | split(',') | map('trim') | sort)
+  run_once: true
+
+# ---------- Token (manual — secret is shown only once) ----------
+
+- name: Check whether '{{ pve_token_name }}' token already exists for {{ pve_user }}
+  ansible.builtin.command: pveum user token list {{ pve_user }} --output-format json
+  register: pve_tokens_raw
+  changed_when: false
+  failed_when: false
+  run_once: true
+
+- name: Set fact — does the token exist?
+  ansible.builtin.set_fact:
+    pve_token_exists: >-
+      {{ (pve_tokens_raw.stdout | default('[]') | from_json)
+         | map(attribute='tokenid') | list
+         | select('search', '!' ~ pve_token_name ~ '$') | list | length > 0 }}
+  run_once: true
+
+- name: Print token-creation instructions if the token doesn't exist
+  ansible.builtin.debug:
+    msg: |
+      No '{{ pve_token_name }}' token exists for {{ pve_user }}.
+      To create one, run THIS on any PVE node (the secret is printed ONCE):
+
+          pveum user token add {{ pve_user }} {{ pve_token_name }} --privsep 0
+
+      Combine the printed `full-tokenid` and `value` and paste into .env:
+
+          PROXMOX_VE_API_TOKEN={{ pve_user }}!{{ pve_token_name }}=<value>
+
+      Then re-source .env (`set -a; source .env; set +a`) and run `make preflight`.
+  when: not pve_token_exists
+  run_once: true
+
+- name: Confirm token already exists
+  ansible.builtin.debug:
+    msg: "Token '{{ pve_user }}!{{ pve_token_name }}' already present — skipping creation prompt."
+  when: pve_token_exists
+  run_once: true

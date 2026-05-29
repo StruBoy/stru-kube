@@ -16,6 +16,17 @@
     enabled: true
     state: started
 
+# etcd is unforgiving about clock skew across CPs; let's not bootstrap RKE2 until
+# chrony has actually synced. `Leap status: Normal` is the simplest definitive
+# signal that we have a synced peer.
+- name: Wait for chrony to sync (etcd will not tolerate skew)
+  ansible.builtin.command: chronyc tracking
+  register: chrony_tracking
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: chrony_tracking.stdout is search('Leap status\s*:\s*Normal')
+
 - name: Persist required kernel modules
   ansible.builtin.template:
     src: k8s-modules.conf.j2

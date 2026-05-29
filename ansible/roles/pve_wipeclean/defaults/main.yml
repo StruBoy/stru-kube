@@ -1,0 +1,25 @@
+---
+# Inverse of pve_bootstrap. These defaults mirror the bootstrap role's defaults
+# (kept duplicated for clarity rather than coupled via vars files — wipeclean
+# needs to keep working even after pve_bootstrap is deleted or moved).
+
+pve_user: terraform@pve
+pve_token_name: provisioner
+pve_role_name: TerraformProv
+pve_local_storage: local
+# PVE installer default content list. Reverting drops 'snippets'.
+pve_default_content: "images,iso,vztmpl,backup"
+
+# Template VMIDs created by opentofu/modules/template/ (one per PVE host).
+# Mirrors `var.template_vmid_base` + index from opentofu/variables.tf.
+wipeclean_template_vmids:
+  - 9000
+  - 9001
+  - 9002
+
+# Tag used by OpenTofu to mark cluster VMs (see opentofu/locals.tf base_tags).
+wipeclean_vm_tag: "k8s"
+
+# Where bpg/proxmox writes cloud-init user-data snippets and the cloud image.
+pve_snippets_dir: /var/lib/vz/snippets
+pve_cloud_image_pattern: "ubuntu-.*-cloudimg"

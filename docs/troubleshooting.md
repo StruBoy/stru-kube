@@ -2,7 +2,18 @@
 
 Common failure modes hit during the build, in roughly the order they appear.
 
+Most entries below now have automated prevention in code — `make preflight`, the
+PVE bootstrap play, `make verify`, or in-playbook asserts catch them before they
+turn into a 10-minute debug session. The entries are kept here because (1) the
+prevention can regress, and (2) seeing the original symptom + cause is the
+fastest way to understand what the prevention is actually doing.
+
+When a section starts with **PREVENTED BY**, it lists the new automated check
+that should already have surfaced the problem with a clearer error.
+
 ## `tofu apply` errors: HTTP 500 "hostname lookup 'pveX' failed"
+
+**PREVENTED BY:** [opentofu/preflight.tf](../opentofu/preflight.tf) — the `terraform_data.validate_pve_hosts` precondition fails the plan with a clear diff between `var.pve_hosts` keys and the live cluster's `pvesh get /nodes` output, and [ansible/roles/pve_bootstrap/tasks/main.yml](../ansible/roles/pve_bootstrap/tasks/main.yml) makes the same assertion during `make bootstrap-pve`.
 
 **Symptom:**
 ```
@@ -21,6 +32,8 @@ ssh root@<any-pve-ip> 'cat /etc/pve/.members'
 The `nodelist` keys are the names. Then update `pve_hosts` and the `host = "..."` fields on every entry in `control_plane` / `workers`. See [envsetup.md §2.7](envsetup.md#27-discover-your-pve-node-names-critical--go-to-terraformtfvars).
 
 ## `tofu apply` errors: SSH "unable to authenticate"
+
+**PREVENTED BY:** `make preflight` (runs automatically before `make plan` / `make configure`) — it calls `ssh-add -L` and fails with a clear instruction to `ssh-add ~/.ssh/id_ed25519` if the agent is empty.
 
 **Symptom:**
 ```
@@ -42,6 +55,8 @@ Make sure that key is also authorized for `root@<pve-ip>` (`ssh-copy-id`).
 
 ## `tofu apply` errors: HTTP 403 "Permission check failed (/storage/local, Datastore.Allocate)"
 
+**PREVENTED BY:** `make bootstrap-pve` creates the `TerraformProv` role with the canonical privilege list (including `Datastore.Allocate`) and re-runs `pveum role modify` on every invocation to fix drift.
+
 **Symptom:** snippet upload fails with the above.
 
 **Cause:** `TerraformProv` role is missing `Datastore.Allocate` (separate from `Datastore.AllocateSpace`).
@@ -54,6 +69,8 @@ pveum role modify TerraformProv -privs "VM.Allocate,VM.Audit,VM.Clone,VM.Config.
 Note: `pveum role modify` takes **commas**, `pveum role add` takes **spaces**.
 
 ## `pveum role add` rejects `VM.Monitor`
+
+**PREVENTED BY:** `make bootstrap-pve` — the canonical privilege list in [ansible/roles/pve_bootstrap/defaults/main.yml](../ansible/roles/pve_bootstrap/defaults/main.yml) uses `VM.Console`, not `VM.Monitor`.
 
 **Symptom:** `400 Parameter verification failed. privs: invalid format - invalid privilege 'VM.Monitor'`
 
@@ -75,6 +92,8 @@ Use "proxmox_download_file" instead. This resource / data source will be removed
 **Fix:** ignore the warning until v1.0 actually ships. The old names work fine.
 
 ## Cloud-init didn't apply / static IP missing
+
+**PREVENTED BY:** `make bootstrap-pve` calls `pvesm set local --content images,iso,vztmpl,backup,snippets` so Snippets is enabled before any VM is provisioned.
 
 **Symptom:** `tofu apply` succeeds but `ansible -m ping` fails; VM has no IP or a DHCP IP, not the static one from variables.
 
@@ -112,6 +131,8 @@ Already applied in this repo.
 
 ## `rke2-server.service` fails: "token is required to join a cluster"
 
+**PREVENTED BY:** Two layers — `make preflight` asserts `$RKE2_TOKEN` is non-empty in the environment, and [ansible/site.yml](../ansible/site.yml) has a `pre_tasks` assert on `rke2_token | length > 0` that runs before any host is touched.
+
 **Symptom:** `systemctl status rke2-server` on a CP shows it fail-loops with the above; `/etc/rancher/rke2/config.yaml` has an empty `token:` line.
 
 **Cause:** `RKE2_TOKEN` wasn't in the env when Ansible rendered the config — `lookup('env', 'RKE2_TOKEN')` returned an empty string.
@@ -130,6 +151,8 @@ ansible-playbook -i inventory/hosts.ini site.yml --tags rke2-server
 ```
 
 ## RKE2 bootstrap server hangs
+
+**PREVENTED BY (time-skew branch):** [ansible/roles/common/tasks/main.yml](../ansible/roles/common/tasks/main.yml) now polls `chronyc tracking` until `Leap status: Normal` before any RKE2 install runs; etcd never sees skew.
 
 **Symptom:** `systemctl status rke2-server` on cp1 shows it can't connect.
 
@@ -160,6 +183,8 @@ The role's handler does this automatically on subsequent manifest changes.
 
 ## CP2/CP3 fail to join with "connection refused" on :9345
 
+**PREVENTED BY:** [ansible/site.yml](../ansible/site.yml) — the wait-for-VIP task now uses `ansible.builtin.uri` against `https://VIP:6443/livez` (instead of `wait_for host:port`), so the join only proceeds once the API is actually serving, not just when a socket is open.
+
 **Symptom:** Second/third server join fails reaching the API VIP.
 
 **Cause:** kube-vip hasn't claimed the VIP yet. The `site.yml` wait_for task on `localhost` is meant to gate this. If it returned before the VIP was actually answering on 6443, kube-vip's pod might still be ContainerCreating.
@@ -176,6 +201,8 @@ ansible-playbook -i inventory/hosts.ini site.yml --tags rke2-server --limit 'rke
 
 ## MetalLB service stuck "Pending"
 
+**DETECTED BY:** `make verify-full` deploys a smoke-test LoadBalancer service end-to-end and fails loud if EXTERNAL-IP never gets assigned.
+
 **Symptom:** `kubectl get svc` shows EXTERNAL-IP as `<pending>` forever.
 
 **Causes:**
@@ -185,6 +212,8 @@ ansible-playbook -i inventory/hosts.ini site.yml --tags rke2-server --limit 'rke
 
 ## Longhorn volumes stuck "Attaching"
 
+**PARTIALLY PREVENTED BY:** [ansible/roles/longhorn_prereqs/tasks/main.yml](../ansible/roles/longhorn_prereqs/tasks/main.yml) now asserts `iscsid.service is active` and [ansible/roles/post_install/tasks/main.yml](../ansible/roles/post_install/tasks/main.yml) asserts the `longhorn=true` label landed. Multipath grabbing devices is still possible if `/etc/multipath/conf.d/longhorn.conf` is removed externally.
+
 **Symptom:** PVC bound but pod can't attach.
 
 **Causes:**
@@ -192,25 +221,17 @@ ansible-playbook -i inventory/hosts.ini site.yml --tags rke2-server --limit 'rke
 - Multipath grabbing Longhorn devices. `cat /etc/multipath/conf.d/longhorn.conf` should have the `^sd[a-z0-9]+` blacklist.
 - Worker missing `longhorn=true` label. `kubectl get nodes --show-labels | grep longhorn`.
 
-## `addons.yml` errors: "Failed to find exact match for traefik.io/v1alpha1.Middleware"
-
-**Symptom:**
-```
-[ERROR]: Task failed: Module failed: Failed to find exact match for
-traefik.io/v1alpha1.Middleware by [kind, name, singularName, shortNames]
-```
-
-**Cause:** RKE2 ships **`rke2-ingress-nginx`**, not Traefik (Traefik is K3s). Older versions of this repo applied a Traefik `IngressRoute` + `Middleware`, but no Traefik CRDs exist in the cluster.
-
-**Fix:** the current [addons/longhorn/ingress.yaml](../addons/longhorn/ingress.yaml) uses a standard `networking.k8s.io/v1` Ingress with nginx basic-auth annotations. If you're seeing this error, you're on stale code — pull the latest. The legacy [addons/traefik/HelmChartConfig.yaml](../addons/traefik/HelmChartConfig.yaml) is kept as a reference but no longer applied.
-
 ## API VIP not reachable from workstation
+
+**DETECTED BY:** `make verify` curls the API VIP from the workstation and fails with a clear message if it can't reach it (rather than letting `kubectl` time out silently).
 
 **Symptom:** `kubectl get nodes` times out, but SSH to nodes works.
 
 **Cause:** kube-vip uses gratuitous ARP. Some switches/routers filter unsolicited ARPs. Verify with `arping 10.74.2.29` from your workstation. If filtered, switch kube-vip to BGP mode or use one of the CP IPs in your kubeconfig directly.
 
 ## Kubeconfig fetched but kubectl shows "connection refused"
+
+**DETECTED BY:** `make verify` greps the kubeconfig for `127.0.0.1` and refuses to continue if it finds it — pointing you at the `post-install` tag.
 
 **Cause:** kubeconfig still has `127.0.0.1`. The `post_install` role should rewrite it; if you ran a partial play, run:
 

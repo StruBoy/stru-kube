@@ -1,0 +1,18 @@
+---
+# One-time Proxmox host setup: TerraformProv role, terraform@pve user + ACL,
+# Snippets content type on `local` storage, and node-name validation.
+#
+# Idempotent — safe to re-run.
+#
+# Usage:
+#   cp ansible/inventory/pve-hosts.ini.example ansible/inventory/pve-hosts.ini
+#   $EDITOR ansible/inventory/pve-hosts.ini      # adjust host names + IPs
+#   make bootstrap-pve
+
+- name: Bootstrap Proxmox hosts (role, user, snippets, validation)
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: false
+  roles:
+    - role: pve_bootstrap
+      tags: [pve-bootstrap]

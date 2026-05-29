@@ -1,0 +1,48 @@
+---
+# PVE-side service account that OpenTofu (bpg/proxmox) authenticates as.
+pve_user: terraform@pve
+pve_token_name: provisioner
+pve_role_name: TerraformProv
+
+# Canonical TerraformProv privilege list. Keep in sync with docs/envsetup.md §2.2.
+# Notes:
+#  - VM.Monitor was REMOVED in PVE 8 — use VM.Console.
+#  - Datastore.Allocate is REQUIRED on top of Datastore.AllocateSpace, otherwise
+#    cloud-init snippet uploads fail with HTTP 403.
+pve_role_privs:
+  - VM.Allocate
+  - VM.Audit
+  - VM.Clone
+  - VM.Config.CDROM
+  - VM.Config.CPU
+  - VM.Config.Cloudinit
+  - VM.Config.Disk
+  - VM.Config.HWType
+  - VM.Config.Memory
+  - VM.Config.Network
+  - VM.Config.Options
+  - VM.Console
+  - VM.Migrate
+  - VM.PowerMgmt
+  - Datastore.Allocate
+  - Datastore.AllocateSpace
+  - Datastore.AllocateTemplate
+  - Datastore.Audit
+  - Pool.Allocate
+  - Sys.Audit
+  - Sys.Console
+  - Sys.Modify
+  - SDN.Use
+
+# Storage content types for the `local` pool. PVE defaults are
+# images,iso,vztmpl,backup — we add `snippets` so cloud-init user-data uploads work.
+pve_local_storage: local
+pve_local_content: "images,iso,vztmpl,backup,snippets"
+
+# Expected PVE node names — must equal /etc/pve/.members nodelist keys on the cluster.
+# These match the OpenTofu var.pve_hosts defaults. Override with -e if your
+# cluster uses different names.
+expected_pve_nodes:
+  - stru-prox0
+  - stru-prox1
+  - stru-prox2

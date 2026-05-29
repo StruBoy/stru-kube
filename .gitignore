@@ -19,6 +19,7 @@ terraform.tfvars
 # Ansible
 *.retry
 ansible/inventory/hosts.ini
+ansible/inventory/pve-hosts.ini
 ansible/.facts_cache/
 .ansible/
 

@@ -11,6 +11,14 @@
     enabled: true
     state: started
 
+# `started` only means systemd tried — confirm the daemon is actually active.
+# A flapping iscsid is the most common cause of "Longhorn volume stuck Attaching".
+- name: Assert iscsid is active
+  ansible.builtin.command: systemctl is-active iscsid
+  register: iscsid_active
+  changed_when: false
+  failed_when: iscsid_active.stdout | trim != 'active'
+
 - name: Ensure multipath drop-in dir exists
   ansible.builtin.file:
     path: /etc/multipath/conf.d

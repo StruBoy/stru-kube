@@ -70,14 +70,18 @@ When this grows beyond one operator:
 
 ## Reset
 
-To wipe RKE2 from all nodes without destroying VMs:
+Three tiers, smallest to largest:
 
 ```sh
-make reset
+make reset                       # uninstall RKE2, keep the VMs (most common)
+make clean                       # tofu destroy: destroys VMs + templates, keeps PVE config
+make wipeclean CONFIRM=yes       # destroys VMs AND undoes `bootstrap-pve`: removes the
+                                 #   terraform@pve user/token, TerraformProv role,
+                                 #   reverts Snippets on local storage, deletes the cloud
+                                 #   image and leftover snippet files. Use to hand the
+                                 #   PVE cluster off, or when starting completely over.
 ```
 
-To nuke everything (VMs included):
+`make wipeclean` runs a reachability preflight ([scripts/wipeclean-preflight.sh](../scripts/wipeclean-preflight.sh)) before any destructive step — every PVE host in `pve-hosts.ini` must be reachable via SSH, and the Proxmox API endpoint is probed. SSH unreachability is a hard fail (the play needs it); a dead API is a warning only (the Ansible play handles VM cleanup via `pvesh` as a backstop if `tofu destroy` can't).
 
-```sh
-make clean   # tofu destroy
-```
+After `make wipeclean`, the next deploy must start from `make bootstrap-pve`.

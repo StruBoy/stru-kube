@@ -1,4 +1,23 @@
 ---
+# Fail fast if RKE2_TOKEN didn't make it into the environment. Otherwise the
+# config template renders `token:` empty, every CP fails to join, and the failure
+# only shows up 5 minutes later in `systemctl status rke2-server`.
+- name: Validate required env vars before touching any host
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Assert RKE2_TOKEN is set
+      ansible.builtin.assert:
+        that:
+          - rke2_token is defined
+          - rke2_token | length > 0
+        fail_msg: |
+          RKE2_TOKEN env var is empty. Source .env first:
+            set -a; source .env; set +a
+          Or use `make configure`, which auto-sources .env.
+      tags: [always]
+
 - name: Base OS prep on all cluster nodes
   hosts: rke2_cluster
   become: true
@@ -33,11 +52,20 @@
   become: false
   gather_facts: false
   tasks:
-    - name: Wait for kube-vip to claim {{ rke2_api_vip }}:6443
-      ansible.builtin.wait_for:
-        host: "{{ rke2_api_vip }}"
-        port: 6443
-        timeout: 300
+    # A bare TCP-port check returns true as soon as the socket accepts, which
+    # happens before the API is actually serving requests — and that's how cp2/cp3
+    # used to race kube-vip and fail to join. Probe /livez instead: 200 means RKE2
+    # is healthy; 401 means TLS is up and the API is serving (auth not provided).
+    # Either is good enough to start the next join.
+    - name: Wait for API VIP to serve /livez (kube-vip claimed + RKE2 healthy)
+      ansible.builtin.uri:
+        url: "https://{{ rke2_api_vip }}:6443/livez"
+        validate_certs: false
+        status_code: [200, 401]
+      register: vip_live
+      until: vip_live.status in [200, 401]
+      retries: 60
+      delay: 5
       delegate_to: localhost
       tags: [kube-vip, rke2-server]
 

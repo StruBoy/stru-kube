@@ -2,12 +2,14 @@
 
 Step-by-step instructions for installing prerequisites and collecting every value `.env` needs. Work through the sections in order — later steps depend on earlier ones.
 
-By the end you'll have the toolchain on your workstation and a populated `.env` file in the project root. **Never commit `.env`.** `.gitignore` already excludes it.
+By the end you'll have the toolchain on your workstation, a populated `.env` file in the project root, and PVE-side state (TerraformProv role, terraform@pve user, Snippets-on-`local`) all in place. **Never commit `.env`.** `.gitignore` already excludes it.
 
 ```sh
 cp .env.example .env
 $EDITOR .env
 ```
+
+The Proxmox-side setup (sections 2–4 below) is automated by [`make bootstrap-pve`](#20-the-automated-path-make-bootstrap-pve-recommended); after the toolchain is installed you can largely just follow the [README Quickstart](../README.md#quickstart) and use this document as a reference when you hit specific values. The remaining sections explain what each `.env` variable means and how to derive it.
 
 ---
 
@@ -99,6 +101,29 @@ If you get connection refused, check `systemctl status pveproxy` on the PVE node
 ## 2. `PROXMOX_VE_API_TOKEN`
 
 A scoped API token that lets OpenTofu manage VMs without using your root password. This takes a few steps because we create a dedicated user + role + token instead of using the root token.
+
+### 2.0 The automated path: `make bootstrap-pve` (recommended)
+
+The TerraformProv role, `terraform@pve` user, ACL grant, and Snippets-on-`local` are all created idempotently by `ansible/bootstrap-pve.yml`. Run it once before everything else:
+
+```sh
+cp ansible/inventory/pve-hosts.ini.example ansible/inventory/pve-hosts.ini
+$EDITOR ansible/inventory/pve-hosts.ini       # set your PVE hostnames + IPs
+make bootstrap-pve
+```
+
+It also validates that `var.pve_hosts` keys match `/etc/pve/.members` on the live cluster, so a stale config blows up here (with a clear diff) rather than later at HTTP 500.
+
+The token itself is **not** created automatically — Proxmox prints the secret only once, so you need to run the printed command on a PVE node and paste the result into `.env`:
+
+```sh
+ssh root@10.74.2.20 'pveum user token add terraform@pve provisioner --privsep 0'
+# copy `full-tokenid=value` into PROXMOX_VE_API_TOKEN in .env
+```
+
+Then `make preflight` confirms everything is wired up.
+
+The manual steps below (§2.1–§2.6) are what `make bootstrap-pve` automates — they're kept as reference for understanding what's happening or for environments where you can't run Ansible against the PVE hosts.
 
 ### 2.1 SSH into any Proxmox node
 
@@ -460,7 +485,7 @@ All checks passing? You're ready for `make plan`.
 
 ## Don't forget the one-time PVE GUI step
 
-Before running `tofu apply`, **enable Snippets** on `local` storage:
+`make bootstrap-pve` enables this for you automatically. If you're skipping the bootstrap play and configuring PVE by hand, **enable Snippets** on `local` storage:
 
 1. Open the Proxmox web UI → **Datacenter** → **Storage**
 2. Select `local` → click **Edit**
