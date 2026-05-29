@@ -15,7 +15,9 @@ Everything runs through the Makefile, which auto-sources `.env`. Running `tofu` 
 ```sh
 make preflight       # toolchain + env + ssh-agent + Proxmox API reachability
 make bootstrap-pve   # one-time PVE setup: TerraformProv role, terraform@pve user, Snippets,
-                     #   and `var.pve_hosts` ↔ live-cluster node-name validation. Idempotent.
+                     #   `var.pve_hosts` ↔ live-cluster node-name validation, and a systemd
+                     #   .link file that permanently disables GSO/TSO on physical NICs.
+                     #   Idempotent.
 make plan            # tofu init + tofu plan -out=tfplan (in opentofu/) — runs preflight first
 make apply           # tofu apply tfplan — provisions 6 VMs, writes ansible/inventory/hosts.ini
 make configure       # ansible-galaxy + ansible-playbook site.yml — installs RKE2 — runs preflight first
@@ -45,7 +47,7 @@ ansible-playbook -i inventory/hosts.ini addons.yml --tags metallb
 ansible-playbook -i inventory/hosts.ini addons.yml --tags longhorn
 ```
 
-Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-bootstrap`, `rke2-agent`, `post-install`, `metallb`, `longhorn`.
+Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-bootstrap`, `rke2-agent`, `post-install`, `metallb`, `longhorn`, `pve-bootstrap`, `pve-nic-offload`, `pve-wipeclean`.
 
 ## Architecture you can't see from one file
 
@@ -65,6 +67,8 @@ Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-boot
 **Ingress is `rke2-ingress-nginx`, not Traefik.** Traefik is K3s. The bundled nginx controller runs as a DaemonSet with hostPort 80/443 on every node — so clients hit any node IP directly, and MetalLB's `10.74.2.200-220` pool stays free for app `type: LoadBalancer` services. Longhorn UI ingress uses standard `networking.k8s.io/v1` with nginx basic-auth annotations (Secret key `auth`, **not** Traefik's `users`).
 
 **Secrets are env-only.** `.env` (gitignored) is the only secret store. Ansible reads `RKE2_TOKEN` and `LONGHORN_UI_PASS` via `lookup('env', ...)`. The provider reads `PROXMOX_VE_*` via env vars. Migration path to sops-age is sketched in [docs/runbook.md](docs/runbook.md) — don't introduce a different secrets system without updating that.
+
+**Host NIC offloads (GSO/TSO) are disabled by `bootstrap-pve`.** A `systemd .link` file at `/etc/systemd/network/10-stru-kube-no-offload.link` (written by [ansible/roles/pve_nic_offload](ansible/roles/pve_nic_offload/)) sets `GenericSegmentationOffload=false` and `TCPSegmentationOffload=false` on every physical NIC matching `en* eth* nic*`. Reason: during a deploy, stru-prox0 fell off the network under Longhorn's container-pull load — the signature of a NIC driver wedging with hardware segmentation offload enabled (common Realtek/Intel bug). The `.link` file is the *permanent* mechanism (udev re-applies on every link bring-up); the role also runs `ethtool -K ... gso off tso off` for immediate effect. Don't remove the role without confirming the underlying hardware is offload-stable.
 
 ## Things that will break the build if you "fix" them
 

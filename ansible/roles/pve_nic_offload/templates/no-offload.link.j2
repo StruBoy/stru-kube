@@ -1,0 +1,12 @@
+# Disable NIC offloads on physical Ethernet interfaces.
+# Managed by stru-kube (ansible role pve_nic_offload). Do not edit by hand.
+# Mitigation for NIC drivers (Realtek r8168/r8169, some Intel e1000e/igb) that
+# wedge under load with hardware segmentation offload enabled.
+
+[Match]
+OriginalName={{ pve_nic_offload_match }}
+
+[Link]
+{% for feature in pve_nic_offload_disable %}
+{{ feature }}=false
+{% endfor %}

@@ -104,7 +104,7 @@ A scoped API token that lets OpenTofu manage VMs without using your root passwor
 
 ### 2.0 The automated path: `make bootstrap-pve` (recommended)
 
-The TerraformProv role, `terraform@pve` user, ACL grant, and Snippets-on-`local` are all created idempotently by `ansible/bootstrap-pve.yml`. Run it once before everything else:
+The TerraformProv role, `terraform@pve` user, ACL grant, Snippets-on-`local`, and a systemd `.link` file disabling GSO/TSO on each PVE host's physical NICs are all created idempotently by `ansible/bootstrap-pve.yml`. Run it once before everything else:
 
 ```sh
 cp ansible/inventory/pve-hosts.ini.example ansible/inventory/pve-hosts.ini

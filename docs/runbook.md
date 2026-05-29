@@ -59,6 +59,23 @@ If a Proxmox host dies, you lose one CP and one worker. The remaining 2 CPs keep
 - **etcd** snapshots are taken by RKE2 every 12 hours at `/var/lib/rancher/rke2/server/db/snapshots/` on each CP. Rsync these off-cluster for DR.
 - **Longhorn** can back up to S3/NFS via the UI or `BackupTarget` CRD.
 
+## Host-level NIC tuning
+
+`make bootstrap-pve` writes `/etc/systemd/network/10-stru-kube-no-offload.link` on every PVE host (via the `pve_nic_offload` role) to permanently disable Generic Segmentation Offload and TCP Segmentation Offload on physical NICs matching `en* eth* nic*`. This is a stability fix for NIC drivers (Realtek r8168/r8169, some Intel chipsets) that drop packets under load with hardware offload on.
+
+If a PVE host is reinstalled or the `.link` file is otherwise lost, just re-run `make bootstrap-pve` — the role is idempotent. To target only the NIC tuning (skipping the user/role/snippets setup):
+
+```sh
+cd ansible && ansible-playbook -i inventory/pve-hosts.ini bootstrap-pve.yml --tags pve-nic-offload
+```
+
+To verify after a reboot:
+
+```sh
+ssh root@<pve-host> 'ethtool -k nic0 | grep -E "(generic|tcp)-segmentation-offload"'
+# both should report "off"
+```
+
 ## Migrate secrets to sops-age
 
 When this grows beyond one operator:

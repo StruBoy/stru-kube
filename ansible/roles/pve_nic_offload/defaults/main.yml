@@ -1,0 +1,17 @@
+---
+# Features to set to `false` in the .link file's [Link] section.
+# See `man systemd.link` for the full list.
+pve_nic_offload_disable:
+  - GenericSegmentationOffload
+  - TCPSegmentationOffload
+
+# Match pattern (space-separated globs) for physical Ethernet:
+#   en*  — systemd predictable names (eno1, enp1s0, ens18, …)
+#   eth* — legacy kernel names
+#   nic* — custom rename used on these PVE hosts
+# Excludes vmbr*, tap*, bond*, vlan*, lo.
+pve_nic_offload_match: "en* eth* nic*"
+
+# Fixed path — systemd-udevd reads .link files from /etc/systemd/network/
+# (and /usr/lib/systemd/network/). The "10-" prefix wins over distro defaults.
+pve_nic_offload_link_path: /etc/systemd/network/10-stru-kube-no-offload.link

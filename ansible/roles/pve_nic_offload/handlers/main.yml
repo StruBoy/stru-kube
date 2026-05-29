@@ -1,0 +1,11 @@
+---
+# Re-apply systemd .link files after the offload .link is added/changed.
+# `udevadm trigger --action=change --subsystem-match=net` re-runs udev rules
+# (including .link processing) on every netdev without bringing interfaces
+# down — safe to run on a remote host.
+- name: reapply udev offload settings
+  ansible.builtin.shell: |
+    set -e
+    udevadm control --reload
+    udevadm trigger --action=change --subsystem-match=net
+  changed_when: true

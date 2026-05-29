@@ -66,13 +66,15 @@ verify:
 			echo "      Re-run: ansible-playbook -i inventory/hosts.ini site.yml --tags post-install"; \
 			exit 1; \
 		fi; \
-		if ! curl -kfs --max-time 5 "$$api_url/version" > /dev/null; then \
-			echo "FAIL: $$api_url/version unreachable from this workstation."; \
-			echo "      - is the cluster up? ssh ubuntu@<cp-ip> sudo systemctl status rke2-server"; \
-			echo "      - some switches filter gratuitous ARP from kube-vip; see docs/troubleshooting.md"; \
-			exit 1; \
-		fi; \
-		echo "API at $$api_url is reachable."; \
+		http_code=$$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "$$api_url/livez" 2>/dev/null || echo "000"); \
+		case "$$http_code" in \
+			200|401) echo "API at $$api_url is reachable (livez=$$http_code; 401 = auth required, server is up)." ;; \
+			*) \
+				echo "FAIL: $$api_url/livez returned HTTP $$http_code (expected 200 or 401)."; \
+				echo "      - is the cluster up? ssh ubuntu@<cp-ip> sudo systemctl status rke2-server"; \
+				echo "      - some switches filter gratuitous ARP from kube-vip; see docs/troubleshooting.md"; \
+				exit 1 ;; \
+		esac; \
 		kubectl get nodes -o wide && \
 		kubectl get pods -A && \
 		kubectl get sc

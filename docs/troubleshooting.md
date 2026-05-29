@@ -252,6 +252,23 @@ sed -i.bak "s|https://127\.0\.0\.1:6443|https://10.74.2.29:6443|" kubeconfig/rke
 
 **Cause:** Older PVE versions or non-LVM-thin storage. Edit [opentofu/modules/vm/main.tf](../opentofu/modules/vm/main.tf) and remove `iothread = true` / `discard = "on"` from the disk blocks.
 
+## PVE host drops off the network under load
+
+**PREVENTED BY:** `make bootstrap-pve` runs the [`pve_nic_offload`](../ansible/roles/pve_nic_offload/) role, which writes `/etc/systemd/network/10-stru-kube-no-offload.link` to permanently disable `GenericSegmentationOffload` and `TCPSegmentationOffload` on every physical NIC matching `en* eth* nic*`. It also `ethtool -K`'s the change in immediately so a reboot isn't needed for it to take effect.
+
+**Symptom:** one PVE host disappears from the LAN during heavy I/O (e.g., while a worker VM on that host is pulling many large container images during `make addons`). The UniFi/router gateway returns ICMP "Destination Host Unreachable" — an L2/ARP-level failure, not a routing problem. Other PVE hosts stay up.
+
+**Cause:** Common Realtek (r8168/r8169) and some Intel (e1000e, igb under certain firmware) NIC drivers have bugs where the hardware segmentation offload engine wedges or drops packets under load, silently killing connectivity until a kernel reset or interface flap.
+
+**If it happens anyway:** confirm the `.link` file is on the host:
+
+```sh
+ssh root@<pve-host> 'cat /etc/systemd/network/10-stru-kube-no-offload.link'
+ssh root@<pve-host> 'ethtool -k nic0 | grep -E "(generic|tcp)-segmentation-offload"'
+```
+
+If the file is missing (e.g., after a fresh PVE reinstall on one node), re-run `make bootstrap-pve`. If both flags are `off` and the host still drops, escalate by disabling receive offloads too — add `GenericReceiveOffload` and `LargeReceiveOffload` to `pve_nic_offload_disable` in [ansible/roles/pve_nic_offload/defaults/main.yml](../ansible/roles/pve_nic_offload/defaults/main.yml) and re-run bootstrap.
+
 ## Trailing-slash error: "no such file '/json/version'"
 
 **Symptom:**

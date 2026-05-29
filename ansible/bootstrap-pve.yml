@@ -1,6 +1,10 @@
 ---
-# One-time Proxmox host setup: TerraformProv role, terraform@pve user + ACL,
-# Snippets content type on `local` storage, and node-name validation.
+# One-time Proxmox host setup:
+#   - pve_bootstrap:    TerraformProv role, terraform@pve user + ACL,
+#                       Snippets on `local` storage, node-name validation.
+#   - pve_nic_offload:  permanently disable GSO/TSO on physical NICs.
+#                       Mitigation for NIC drivers that wedge under load;
+#                       see docs/troubleshooting.md (stru-prox0 incident).
 #
 # Idempotent — safe to re-run.
 #
@@ -9,10 +13,12 @@
 #   $EDITOR ansible/inventory/pve-hosts.ini      # adjust host names + IPs
 #   make bootstrap-pve
 
-- name: Bootstrap Proxmox hosts (role, user, snippets, validation)
+- name: Bootstrap Proxmox hosts (provisioner account, snippets, NIC offload tuning)
   hosts: proxmox_hosts
   become: true
   gather_facts: false
   roles:
     - role: pve_bootstrap
       tags: [pve-bootstrap]
+    - role: pve_nic_offload
+      tags: [pve-nic-offload]

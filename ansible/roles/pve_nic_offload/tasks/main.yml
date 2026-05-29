@@ -1,0 +1,69 @@
+---
+# Permanently disable GSO/TSO on physical NICs of a Proxmox hypervisor host.
+# The .link file is the persistent mechanism (udev re-applies on every link
+# bring-up); ethtool is the immediate-apply so the change takes effect now
+# without waiting for a reboot.
+#
+# `become: true` is set at the playbook level.
+
+- name: Confirm we're on a PVE node
+  ansible.builtin.command: pveversion
+  changed_when: false
+
+- name: Ensure ethtool is installed
+  ansible.builtin.apt:
+    name: ethtool
+    state: present
+    update_cache: false
+
+- name: Discover physical NICs matching '{{ pve_nic_offload_match }}'
+  ansible.builtin.shell: |
+    set -eu
+    for iface in $(ls /sys/class/net); do
+      case "$iface" in
+        {{ pve_nic_offload_match | replace(' ', '|') }}) echo "$iface" ;;
+      esac
+    done
+  args:
+    executable: /bin/bash
+  register: pve_nic_offload_ifaces_raw
+  changed_when: false
+
+- name: Fail if no physical NICs matched (check pve_nic_offload_match)
+  ansible.builtin.assert:
+    that:
+      - pve_nic_offload_ifaces_raw.stdout_lines | length > 0
+    fail_msg: >-
+      No interfaces in /sys/class/net matched globs '{{ pve_nic_offload_match }}'.
+      Inspect `ls /sys/class/net` on the host and update pve_nic_offload_match.
+
+- name: Render /etc/systemd/network/10-stru-kube-no-offload.link
+  ansible.builtin.template:
+    src: no-offload.link.j2
+    dest: "{{ pve_nic_offload_link_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reapply udev offload settings
+
+- name: Apply GSO/TSO=off immediately via ethtool (until reboot, then .link governs)
+  ansible.builtin.command: "ethtool -K {{ item }} gso off tso off"
+  loop: "{{ pve_nic_offload_ifaces_raw.stdout_lines }}"
+  changed_when: false
+
+- name: Flush handlers so udev re-applies the new .link before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify GSO and TSO are off on each matched NIC
+  ansible.builtin.shell: |
+    set -eu
+    out=$(ethtool -k {{ item }})
+    echo "$out" | grep -qE '^generic-segmentation-offload: off$' \
+      || { echo "GSO not off on {{ item }}:"; echo "$out" | grep -E '^generic-segmentation-offload'; exit 1; }
+    echo "$out" | grep -qE '^tcp-segmentation-offload: off$' \
+      || { echo "TSO not off on {{ item }}:"; echo "$out" | grep -E '^tcp-segmentation-offload'; exit 1; }
+    echo "{{ item }}: GSO and TSO both off"
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_nic_offload_ifaces_raw.stdout_lines }}"
+  changed_when: false
