@@ -6,6 +6,22 @@ metadata:
   namespace: kube-system
 spec:
   hostNetwork: true
+  # kube-vip needs CP-only placement: it mounts /etc/rancher/rke2/rke2.yaml
+  # (which only exists on rke2 servers), and its in-cluster client talks to
+  # the local API on 127.0.0.1. Without these, the scheduler can pick a worker
+  # and the pod gets stuck in ContainerCreating with a hostPath mount error.
+  # NOTE: RKE2 sets this label to the literal string "true" (not "" like kubeadm).
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: "true"
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/etcd
+      operator: Exists
+      effect: NoExecute
+    - key: CriticalAddonsOnly
+      operator: Exists
   # kube-vip resolves "kubernetes" via DNS before the VIP is up; map it to the
   # local API server so it can acquire the leader-election lease.
   hostAliases:
