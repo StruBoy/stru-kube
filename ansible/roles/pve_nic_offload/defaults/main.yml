@@ -1,9 +1,9 @@
 ---
-# Features to set to `false` in the .link file's [Link] section.
-# See `man systemd.link` for the full list.
-pve_nic_offload_disable:
-  - GenericSegmentationOffload
-  - TCPSegmentationOffload
+# Features passed to `ethtool -K <iface> <feature> off` by the systemd oneshot
+# unit. Short-form ethtool names (see `ethtool -k <iface>` output column 1).
+pve_nic_offload_disable_features:
+  - gso
+  - tso
 
 # Match pattern (space-separated globs) for physical Ethernet:
 #   en*  — systemd predictable names (eno1, enp1s0, ens18, …)
@@ -12,6 +12,12 @@ pve_nic_offload_disable:
 # Excludes vmbr*, tap*, bond*, vlan*, lo.
 pve_nic_offload_match: "en* eth* nic*"
 
-# Fixed path — systemd-udevd reads .link files from /etc/systemd/network/
-# (and /usr/lib/systemd/network/). The "10-" prefix wins over distro defaults.
-pve_nic_offload_link_path: /etc/systemd/network/10-stru-kube-no-offload.link
+# Systemd oneshot unit that runs `ethtool -K` at boot. Independent of
+# .link matching, so it cannot shadow boot-time interface rename rules.
+pve_nic_offload_service_name: stru-kube-nic-offload.service
+pve_nic_offload_service_path: /etc/systemd/system/stru-kube-nic-offload.service
+
+# Path of the obsolete .link file from a previous version of this role.
+# Removed at role-run time. Background: that file shadowed the host's
+# eno2 → nic0 rename rule on reboot, leaving vmbr0 with no slave.
+pve_nic_offload_legacy_link_path: /etc/systemd/network/10-stru-kube-no-offload.link

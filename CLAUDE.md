@@ -16,8 +16,8 @@ Everything runs through the Makefile, which auto-sources `.env`. Running `tofu` 
 make preflight       # toolchain + env + ssh-agent + Proxmox API reachability
 make bootstrap-pve   # one-time PVE setup: TerraformProv role, terraform@pve user, Snippets,
                      #   `var.pve_hosts` ↔ live-cluster node-name validation, and a systemd
-                     #   .link file that permanently disables GSO/TSO on physical NICs.
-                     #   Idempotent.
+                     #   oneshot (stru-kube-nic-offload.service) that disables GSO/TSO on
+                     #   physical NICs at every boot. Idempotent.
 make plan            # tofu init + tofu plan -out=tfplan (in opentofu/) — runs preflight first
 make apply           # tofu apply tfplan — provisions 6 VMs, writes ansible/inventory/hosts.ini
 make configure       # ansible-galaxy + ansible-playbook site.yml — installs RKE2 — runs preflight first
@@ -68,7 +68,7 @@ Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-boot
 
 **Secrets are env-only.** `.env` (gitignored) is the only secret store. Ansible reads `RKE2_TOKEN` and `LONGHORN_UI_PASS` via `lookup('env', ...)`. The provider reads `PROXMOX_VE_*` via env vars. Migration path to sops-age is sketched in [docs/runbook.md](docs/runbook.md) — don't introduce a different secrets system without updating that.
 
-**Host NIC offloads (GSO/TSO) are disabled by `bootstrap-pve`.** A `systemd .link` file at `/etc/systemd/network/10-stru-kube-no-offload.link` (written by [ansible/roles/pve_nic_offload](ansible/roles/pve_nic_offload/)) sets `GenericSegmentationOffload=false` and `TCPSegmentationOffload=false` on every physical NIC matching `en* eth* nic*`. Reason: during a deploy, stru-prox0 fell off the network under Longhorn's container-pull load — the signature of a NIC driver wedging with hardware segmentation offload enabled (common Realtek/Intel bug). The `.link` file is the *permanent* mechanism (udev re-applies on every link bring-up); the role also runs `ethtool -K ... gso off tso off` for immediate effect. Don't remove the role without confirming the underlying hardware is offload-stable.
+**Host NIC offloads (GSO/TSO) are disabled by `bootstrap-pve` via a systemd oneshot service.** [ansible/roles/pve_nic_offload](ansible/roles/pve_nic_offload/) installs `/etc/systemd/system/stru-kube-nic-offload.service` (a `Type=oneshot RemainAfterExit=yes` unit) that runs `ethtool -K <iface> gso off tso off` on every NIC matching `en* eth* nic*` after `network.target`. The role `systemctl enable --now`'s it so the offload disable takes effect immediately and re-fires automatically at every boot. Reason: during a deploy, stru-prox0 fell off the network under Longhorn's container-pull load — the signature of a NIC driver wedging with hardware segmentation offload enabled (common Realtek/Intel bug). **Don't replace this with a systemd `.link` file** — an earlier version of this role did exactly that, and the file shadowed the host's boot-time `eno2 → nic0` rename rule (per `man systemd.link`, only the first matching `.link` per device is applied), leaving `vmbr0` with no slave on reboot. The service-based approach has no interaction with `.link` matching. Don't remove the role without confirming the underlying hardware is offload-stable.
 
 ## Things that will break the build if you "fix" them
 

@@ -1,11 +1,15 @@
 ---
-# Re-apply systemd .link files after the offload .link is added/changed.
-# `udevadm trigger --action=change --subsystem-match=net` re-runs udev rules
-# (including .link processing) on every netdev without bringing interfaces
-# down — safe to run on a remote host.
-- name: reapply udev offload settings
-  ansible.builtin.shell: |
-    set -e
-    udevadm control --reload
-    udevadm trigger --action=change --subsystem-match=net
+# Handlers fire at the end of the role unless flushed mid-way.
+# `reload systemd` runs when the .service template is rewritten so
+# `systemctl daemon-reload` happens before we (re-)start the unit.
+# `reload udev` runs when the legacy .link file is removed; we do NOT
+# trigger a udev change event from here because we no longer want to
+# disturb the running netdev's link state.
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: reload udev
+  ansible.builtin.command: udevadm control --reload
   changed_when: true

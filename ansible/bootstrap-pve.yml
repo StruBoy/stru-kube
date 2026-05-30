@@ -2,9 +2,12 @@
 # One-time Proxmox host setup:
 #   - pve_bootstrap:    TerraformProv role, terraform@pve user + ACL,
 #                       Snippets on `local` storage, node-name validation.
-#   - pve_nic_offload:  permanently disable GSO/TSO on physical NICs.
-#                       Mitigation for NIC drivers that wedge under load;
-#                       see docs/troubleshooting.md (stru-prox0 incident).
+#   - pve_nic_offload:  installs a systemd oneshot that runs
+#                       `ethtool -K ... gso off tso off` after network.target,
+#                       disabling hardware segmentation offload on physical
+#                       NICs at every boot. Mitigation for NIC drivers that
+#                       wedge under load; see docs/troubleshooting.md
+#                       (stru-prox0 incident).
 #
 # Idempotent — safe to re-run.
 #

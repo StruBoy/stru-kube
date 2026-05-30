@@ -1,0 +1,17 @@
+[Unit]
+Description=Disable NIC offloads on physical Ethernet (stru-kube)
+Documentation=man:ethtool(8)
+# Managed by stru-kube (ansible role pve_nic_offload). Do not edit by hand.
+# Runs once after networking is up to disable hardware segmentation offload
+# on every physical NIC. Independent of systemd .link matching so it cannot
+# shadow boot-time interface rename rules.
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/env bash -c 'set -eu; for iface in $(ls /sys/class/net); do case "$iface" in {{ pve_nic_offload_match | replace(" ", "|") }}) /usr/sbin/ethtool -K "$iface"{% for f in pve_nic_offload_disable_features %} {{ f }} off{% endfor %} || true ;; esac; done'
+
+[Install]
+WantedBy=multi-user.target

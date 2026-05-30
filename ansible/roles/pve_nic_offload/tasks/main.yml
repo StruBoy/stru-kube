@@ -1,8 +1,9 @@
 ---
-# Permanently disable GSO/TSO on physical NICs of a Proxmox hypervisor host.
-# The .link file is the persistent mechanism (udev re-applies on every link
-# bring-up); ethtool is the immediate-apply so the change takes effect now
-# without waiting for a reboot.
+# Disable GSO/TSO on physical NICs of a Proxmox hypervisor host via a
+# systemd oneshot service. The service is independent of systemd .link
+# matching, so it cannot shadow boot-time interface rename rules — this
+# is the lesson from the earlier `.link`-based version, which broke the
+# host's eno2 → nic0 rename and left vmbr0 with no slave at reboot.
 #
 # `become: true` is set at the playbook level.
 
@@ -37,22 +38,37 @@
       No interfaces in /sys/class/net matched globs '{{ pve_nic_offload_match }}'.
       Inspect `ls /sys/class/net` on the host and update pve_nic_offload_match.
 
-- name: Render /etc/systemd/network/10-stru-kube-no-offload.link
+# Migration: the prior role version dropped a .link file that shadowed
+# the host's eno2 → nic0 rename rule, breaking networking on reboot.
+# Remove it. The running interface name doesn't change here; the rename
+# rule only re-fires on the next boot, which is the host's natural
+# recovery point.
+- name: Remove obsolete .link file from prior role version
+  ansible.builtin.file:
+    path: "{{ pve_nic_offload_legacy_link_path }}"
+    state: absent
+  notify: reload udev
+
+- name: Render systemd oneshot unit at {{ pve_nic_offload_service_path }}
   ansible.builtin.template:
-    src: no-offload.link.j2
-    dest: "{{ pve_nic_offload_link_path }}"
+    src: nic-offload.service.j2
+    dest: "{{ pve_nic_offload_service_path }}"
     owner: root
     group: root
     mode: "0644"
-  notify: reapply udev offload settings
+  notify: reload systemd
 
-- name: Apply GSO/TSO=off immediately via ethtool (until reboot, then .link governs)
-  ansible.builtin.command: "ethtool -K {{ item }} gso off tso off"
-  loop: "{{ pve_nic_offload_ifaces_raw.stdout_lines }}"
-  changed_when: false
-
-- name: Flush handlers so udev re-applies the new .link before verification
+- name: Flush handlers so daemon-reload happens before enable/start
   ansible.builtin.meta: flush_handlers
+
+# `state: started` on a Type=oneshot service fires its ExecStart, which is
+# the immediate-apply path. `enabled: true` adds it to multi-user.target
+# so it fires automatically at every boot.
+- name: Enable and start {{ pve_nic_offload_service_name }}
+  ansible.builtin.systemd:
+    name: "{{ pve_nic_offload_service_name }}"
+    enabled: true
+    state: started
 
 - name: Verify GSO and TSO are off on each matched NIC
   ansible.builtin.shell: |

@@ -254,20 +254,46 @@ sed -i.bak "s|https://127\.0\.0\.1:6443|https://10.74.2.29:6443|" kubeconfig/rke
 
 ## PVE host drops off the network under load
 
-**PREVENTED BY:** `make bootstrap-pve` runs the [`pve_nic_offload`](../ansible/roles/pve_nic_offload/) role, which writes `/etc/systemd/network/10-stru-kube-no-offload.link` to permanently disable `GenericSegmentationOffload` and `TCPSegmentationOffload` on every physical NIC matching `en* eth* nic*`. It also `ethtool -K`'s the change in immediately so a reboot isn't needed for it to take effect.
+**PREVENTED BY:** `make bootstrap-pve` runs the [`pve_nic_offload`](../ansible/roles/pve_nic_offload/) role, which installs `/etc/systemd/system/stru-kube-nic-offload.service` — a systemd `Type=oneshot` unit that runs `ethtool -K <iface> gso off tso off` on every physical NIC matching `en* eth* nic*` after `network.target`. The role `systemctl enable --now`'s it so the disable takes effect immediately and re-fires automatically at every boot.
 
 **Symptom:** one PVE host disappears from the LAN during heavy I/O (e.g., while a worker VM on that host is pulling many large container images during `make addons`). The UniFi/router gateway returns ICMP "Destination Host Unreachable" — an L2/ARP-level failure, not a routing problem. Other PVE hosts stay up.
 
 **Cause:** Common Realtek (r8168/r8169) and some Intel (e1000e, igb under certain firmware) NIC drivers have bugs where the hardware segmentation offload engine wedges or drops packets under load, silently killing connectivity until a kernel reset or interface flap.
 
-**If it happens anyway:** confirm the `.link` file is on the host:
+**If it happens anyway:** confirm the service is installed and active, and that the offloads are actually off:
 
 ```sh
-ssh root@<pve-host> 'cat /etc/systemd/network/10-stru-kube-no-offload.link'
+ssh root@<pve-host> 'systemctl status stru-kube-nic-offload.service'
+ssh root@<pve-host> 'systemctl cat  stru-kube-nic-offload.service'
 ssh root@<pve-host> 'ethtool -k nic0 | grep -E "(generic|tcp)-segmentation-offload"'
 ```
 
-If the file is missing (e.g., after a fresh PVE reinstall on one node), re-run `make bootstrap-pve`. If both flags are `off` and the host still drops, escalate by disabling receive offloads too — add `GenericReceiveOffload` and `LargeReceiveOffload` to `pve_nic_offload_disable` in [ansible/roles/pve_nic_offload/defaults/main.yml](../ansible/roles/pve_nic_offload/defaults/main.yml) and re-run bootstrap.
+If the unit is missing (e.g., after a fresh PVE reinstall on one node), re-run `make bootstrap-pve`. If both flags are `off` and the host still drops, escalate by disabling receive offloads too — add `gro` and `lro` to `pve_nic_offload_disable_features` in [ansible/roles/pve_nic_offload/defaults/main.yml](../ansible/roles/pve_nic_offload/defaults/main.yml) and re-run bootstrap.
+
+## PVE host comes back as `eno2` instead of `nic0`; `vmbr0` won't come up
+
+**Symptom:** after rebooting a PVE host, the physical interface is named `eno2` (or some other kernel-default) instead of the expected `nic0`. `vmbr0` is in `state DOWN` with no slave; `eno2` shows `NO-CARRIER`. The host is unreachable on the LAN; `pvecm status` from a sibling host shows the rebooted node has dropped out of the cluster.
+
+**Cause:** An older version of the `pve_nic_offload` role wrote a systemd `.link` file at `/etc/systemd/network/10-stru-kube-no-offload.link`. Per `man systemd.link`, only the first matching `.link` file per device is applied — and our file (sorted lexically before whatever does the `eno2 → nic0` rename) won, so the rename never fired at boot. `/etc/network/interfaces` then couldn't find `nic0` to enslave under `vmbr0`. The current role version no longer uses `.link` and automatically removes the bad file when it runs, but a host that booted with the old file still in place won't have networking until manually recovered.
+
+**Immediate recovery (PVE console):**
+
+```sh
+ip link set eno2 down
+ip link set eno2 name nic0
+ip link set nic0 up
+ifup vmbr0
+# host should now be back on the LAN
+```
+
+**Then permanently fix it** by running `make bootstrap-pve` — the current role removes the old `.link` and installs the systemd-service replacement. Verify the file is gone:
+
+```sh
+ssh root@<pve-host> 'ls -l /etc/systemd/network/10-stru-kube-no-offload.link 2>&1'
+# should report: No such file or directory
+```
+
+Subsequent reboots will use the systemd-service mechanism and the rename rule will fire normally.
 
 ## Trailing-slash error: "no such file '/json/version'"
 

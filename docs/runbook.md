@@ -61,15 +61,28 @@ If a Proxmox host dies, you lose one CP and one worker. The remaining 2 CPs keep
 
 ## Host-level NIC tuning
 
-`make bootstrap-pve` writes `/etc/systemd/network/10-stru-kube-no-offload.link` on every PVE host (via the `pve_nic_offload` role) to permanently disable Generic Segmentation Offload and TCP Segmentation Offload on physical NICs matching `en* eth* nic*`. This is a stability fix for NIC drivers (Realtek r8168/r8169, some Intel chipsets) that drop packets under load with hardware offload on.
+`make bootstrap-pve` installs the `stru-kube-nic-offload.service` systemd oneshot on every PVE host (via the `pve_nic_offload` role) to permanently disable Generic Segmentation Offload and TCP Segmentation Offload on physical NICs matching `en* eth* nic*`. This is a stability fix for NIC drivers (Realtek r8168/r8169, some Intel chipsets) that drop packets under load with hardware offload on.
 
-If a PVE host is reinstalled or the `.link` file is otherwise lost, just re-run `make bootstrap-pve` — the role is idempotent. To target only the NIC tuning (skipping the user/role/snippets setup):
+If a PVE host is reinstalled or the service is otherwise lost, just re-run `make bootstrap-pve` — the role is idempotent. To target only the NIC tuning (skipping the user/role/snippets setup):
 
 ```sh
 cd ansible && ansible-playbook -i inventory/pve-hosts.ini bootstrap-pve.yml --tags pve-nic-offload
 ```
 
-To verify after a reboot:
+To verify the unit is installed and last ran cleanly:
+
+```sh
+ssh root@<pve-host> 'systemctl status stru-kube-nic-offload.service'
+# Active: active (exited) since <boot time>
+```
+
+To re-apply without rebooting (the ExecStart is idempotent):
+
+```sh
+ssh root@<pve-host> 'systemctl restart stru-kube-nic-offload.service'
+```
+
+To verify the actual NIC state:
 
 ```sh
 ssh root@<pve-host> 'ethtool -k nic0 | grep -E "(generic|tcp)-segmentation-offload"'
