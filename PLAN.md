@@ -123,7 +123,7 @@ ssh {
 
 ### Template module ([opentofu/modules/template/main.tf](opentofu/modules/template/main.tf))
 Runs **once per PVE host** (3 invocations from root `main.tf`):
-- `proxmox_virtual_environment_download_file` — pulls `ubuntu-24.04-server-cloudimg-amd64.img` into `local` as `iso` content (PVE quirk).
+- `proxmox_download_file` — pulls `ubuntu-24.04-server-cloudimg-amd64.img` into `local` as `iso` content (PVE quirk). (Renamed from the deprecated `proxmox_virtual_environment_download_file`; a `moved` block in the module migrates existing state.)
 - `proxmox_virtual_environment_vm` with `template = true`, VMIDs 9000/9001/9002, one per host. `agent { enabled = true }`, `serial_device {}` (required by Ubuntu cloud images), empty `cloud_init` device. No baked-in `qemu-guest-agent` — installed per-clone via cloud-init `packages:` list so image refreshes don't require re-baking.
 
 ### VM module ([opentofu/modules/vm/main.tf](opentofu/modules/vm/main.tf))
@@ -243,7 +243,7 @@ make preflight
 
 # Infrastructure
 cd opentofu
-tofu init
+tofu init -upgrade
 tofu plan -out=tfplan      # preflight.tf validates pve_hosts against live cluster here
 tofu apply tfplan
 # 6 VMs running; ansible/inventory/hosts.ini generated

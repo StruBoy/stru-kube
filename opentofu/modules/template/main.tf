@@ -1,4 +1,9 @@
-resource "proxmox_virtual_environment_download_file" "ubuntu" {
+moved {
+  from = proxmox_virtual_environment_download_file.ubuntu
+  to   = proxmox_download_file.ubuntu
+}
+
+resource "proxmox_download_file" "ubuntu" {
   content_type = "iso"
   datastore_id = var.image_datastore_id
   node_name    = var.host
@@ -36,7 +41,7 @@ resource "proxmox_virtual_environment_vm" "template" {
 
   disk {
     datastore_id = var.datastore_id
-    file_id      = proxmox_virtual_environment_download_file.ubuntu.id
+    file_id      = proxmox_download_file.ubuntu.id
     interface    = "scsi0"
     iothread     = true
     discard      = "on"
