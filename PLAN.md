@@ -16,6 +16,8 @@ Working directory `/Users/steven/projects/stru-kube/` is empty; this is greenfie
 | Storage | Longhorn (replicated, default StorageClass) |
 | LoadBalancer | MetalLB (L2 / ARP mode) |
 | Ingress | RKE2-bundled `rke2-ingress-nginx` (DaemonSet, hostPort 80/443) |
+| GitOps | ArgoCD (`argo-cd` chart, server insecure behind nginx, app-of-apps) |
+| Secrets-in-Git | Bitnami Sealed Secrets (controller in `kube-system`) |
 | API VIP | kube-vip static pod at `10.74.2.29` (with `hostAliases` for `kubernetes` → 127.0.0.1) |
 | PVE storage | `local-lvm` for VM disks, `local` for cloud image + snippets |
 | Bridge | `vmbr0` (flat LAN, untagged) |
@@ -186,6 +188,21 @@ Run from `rke2_first` with delegated local Helm/kubectl using the fetched kubeco
    - Values: `persistence.defaultClass: true`, `defaultClassReplicaCount: 3`, `defaultDataPath: /var/lib/longhorn`, `nodeSelector: {longhorn: "true"}` on manager + driver
    - Apply [addons/longhorn/ingress.yaml](addons/longhorn/ingress.yaml): standard `networking.k8s.io/v1` Ingress for `longhorn.lan` with `ingressClassName: nginx` and nginx basic-auth annotations (`nginx.ingress.kubernetes.io/auth-type: basic`, `auth-secret: longhorn-ui-auth`). Secret data key is `auth` (nginx format), not `users` (Traefik format). htpasswd generated locally from `LONGHORN_UI_USER`/`LONGHORN_UI_PASS` env vars via `lookup('env', ...)`.
 
+4. **ArgoCD** (GitOps; tag `argocd`):
+   - Install chart `argo/argo-cd` from `https://argoproj.github.io/argo-helm` (version pinned in `group_vars/all.yml`) into `argocd`. Values ([addons/argocd/values.yaml](addons/argocd/values.yaml)): `configs.params."server.insecure": true` so nginx terminates; `global.domain`/`configs.cm.url` = `argocd.lan`; non-HA single replicas; Dex/notifications off.
+   - Admin password (only when `ARGOCD_ADMIN_PASS` set): bcrypt via `htpasswd -nbBC 10` normalized to `$2a$`, patched with a fresh `admin.passwordMtime` into the chart-created `argocd-secret` (keeps the Helm release idempotent + the secret out of Git).
+   - Ingress [addons/argocd/ingress.yaml](addons/argocd/ingress.yaml): `ingressClassName: nginx`, host `argocd.lan`, `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` (pairs with insecure mode). No basic-auth — ArgoCD has its own login.
+   - Private-repo creds (only when `ARGOCD_GIT_TOKEN` set): an org-wide `repo-creds` template Secret keyed by `ARGOCD_GIT_URL_PREFIX`; one PAT covers every private repo under the org, public repos clone anonymously.
+   - App-of-apps root [addons/argocd/root-app.yaml](addons/argocd/root-app.yaml) (only when `ARGOCD_ROOT_REPO_URL` set): a `root` Application pointing at the **separate** GitOps repo's `apps/` dir, auto-sync + prune + selfHeal. Skipped until the repo exists so `make addons` stays green.
+
+5. **Sealed Secrets** (secrets-in-Git; tag `sealed-secrets`):
+   - Install chart `sealed-secrets/sealed-secrets` from `https://bitnami-labs.github.io/sealed-secrets` into `kube-system` with `fullnameOverride: sealed-secrets-controller` (matches `kubeseal` defaults → flag-free). Wait for the `sealedsecrets.bitnami.com` CRD.
+   - The controller's RSA sealing key (kube-system, label `sealedsecrets.bitnami.com/sealed-secrets-key=active`) is the root of trust — back it up off-cluster (see [runbook](docs/runbook.md#back-up-the-sealed-secrets-sealing-key)).
+
+> **Secret tiers:** ArgoCD's admin password + repo PAT are *bootstrap* secrets (`.env` → Ansible, like `RKE2_TOKEN`) because they're needed before ArgoCD can pull anything. *App* secrets are committed as `SealedSecret` CRs and decrypted in-cluster. See [docs/architecture.md](docs/architecture.md#gitops--secrets-model).
+
+> **Component roadmap (deferred):** cert-manager (TLS for `argocd.lan`/`longhorn.lan` + gRPC ingress for the argocd CLI) → kube-prometheus-stack (Prometheus/Grafana/Alertmanager, deployed *through* ArgoCD to dogfood the loop) → then nice-to-haves: Argo CD Image Updater, Loki, Velero, Argo Rollouts, Renovate.
+
 ## Critical files (paths to create)
 
 OpenTofu:
@@ -220,6 +237,8 @@ Ansible:
 Addons + project root:
 - [addons/metallb/values.yaml](addons/metallb/values.yaml), [addons/metallb/pool.yaml](addons/metallb/pool.yaml)
 - [addons/longhorn/values.yaml](addons/longhorn/values.yaml), [addons/longhorn/ingress.yaml](addons/longhorn/ingress.yaml)
+- [addons/argocd/values.yaml](addons/argocd/values.yaml), [addons/argocd/ingress.yaml](addons/argocd/ingress.yaml), [addons/argocd/root-app.yaml](addons/argocd/root-app.yaml)
+- [addons/sealed-secrets/values.yaml](addons/sealed-secrets/values.yaml)
 - [scripts/preflight.sh](scripts/preflight.sh) — workstation toolchain + env + API reachability checks
 - [README.md](README.md), [.env.example](.env.example), [.gitignore](.gitignore), [Makefile](Makefile)
 - [docs/architecture.md](docs/architecture.md), [docs/envsetup.md](docs/envsetup.md), [docs/runbook.md](docs/runbook.md), [docs/troubleshooting.md](docs/troubleshooting.md)
@@ -336,6 +355,10 @@ Most of these now have automated prevention; the new mechanism is named after ea
 20. **`initialization` block changes trigger VM replacement** — don't edit `cloud-init.tftpl` after first apply unless you're prepared to recreate VMs; post-creation OS changes belong to Ansible.
 21. **Time skew breaks etcd** — *`common` role asserts `chronyc tracking` reports `Leap status: Normal` before RKE2 ever installs.*
 22. **iscsid flapping causes "Longhorn volume stuck Attaching"** — *`longhorn_prereqs` asserts `iscsid.service is active` after enable.*
+23. **ArgoCD server must run insecure behind nginx** — `configs.params."server.insecure": true` AND the ingress `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` are load-bearing *together*; omitting either gives a redirect loop / 502.
+24. **ArgoCD admin password needs the mtime bump + `$2a$` prefix** — ArgoCD only reloads when `admin.passwordMtime` changes, and Go's bcrypt rejects htpasswd's `$2y$` (the play `sed`s it to `$2a$`).
+25. **The Sealed Secrets sealing key is the root of trust** — it lives in `kube-system` (label `sealedsecrets.bitnami.com/sealed-secrets-key=active`); losing it orphans every committed SealedSecret. Back it up off-cluster; *not* automated by design.
+26. **Keep the app-of-apps `when:` guard** — the `root` Application is only applied when `ARGOCD_ROOT_REPO_URL` is non-empty; applying an Application with an empty `repoURL` leaves it permanently Degraded.
 
 ## Secrets (in `.env`, never committed)
 
@@ -343,5 +366,6 @@ Most of these now have automated prevention; the new mechanism is named after ea
 - `RKE2_TOKEN` — `openssl rand -hex 32`
 - `SSH_PUBLIC_KEY` — path or inline; injected into cloud-init
 - `LONGHORN_UI_PASS` — for the basic-auth Secret
+- `ARGOCD_ADMIN_PASS`, `ARGOCD_GIT_USERNAME`, `ARGOCD_GIT_TOKEN` — ArgoCD *bootstrap* secrets (all optional; blank → task skipped). App secrets are committed as Sealed Secrets instead, not stored here.
 
-Document migration path to sops-age in [docs/runbook.md](docs/runbook.md) for when this grows beyond one operator.
+Document migration path to sops-age in [docs/runbook.md](docs/runbook.md) for when this grows beyond one operator. App-level secrets are handled in-cluster by Sealed Secrets (committed encrypted to the GitOps repos).

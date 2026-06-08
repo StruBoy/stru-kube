@@ -1,0 +1,30 @@
+---
+# App-of-apps root Application. Rendered by Ansible (template:) and applied only
+# when argocd_root_repo_url is non-empty (see ansible/addons.yml). Points at your
+# SEPARATE GitOps repo, whose {{ argocd_root_repo_path }} dir holds child
+# Application manifests — each child may point at its own public or private repo.
+#
+# stru-kube is the bootstrap layer only: once this root app exists, day-2 app
+# changes happen by editing the separate GitOps repo(s), not this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: {{ argocd_root_repo_url }}
+    targetRevision: {{ argocd_root_repo_revision }}
+    path: {{ argocd_root_repo_path }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -421,7 +421,42 @@ ansible-playbook -i inventory/hosts.ini addons.yml --tags longhorn
 
 ---
 
-## 8. Wiring `.env` into your shell
+## 8. ArgoCD & Sealed Secrets (GitOps) — all optional
+
+These power the GitOps layer (`make addons` / `make gitops`). **Every one is optional**: leave it
+blank and the matching Ansible task simply skips, so the cluster installs ArgoCD + Sealed Secrets
+fine before you've created any GitOps repo. They're documented in `.env.example`. `make preflight`
+lists them under "optional GitOps env vars" and only *warns* (never fails) when they're unset.
+
+These are ArgoCD's own **bootstrap** secrets. Application secrets don't go here — they go into Git
+as Sealed Secrets (see [runbook.md](runbook.md#sealed-secrets)).
+
+| Var | Purpose | Blank behavior |
+|---|---|---|
+| `ARGOCD_ADMIN_PASS` | ArgoCD `admin` UI password (bcrypt-hashed at apply time) | Chart's random initial password is kept (read it from `argocd-initial-admin-secret`) |
+| `ARGOCD_ROOT_REPO_URL` | Your separate GitOps repo for the app-of-apps `root` | `root` Application is not created |
+| `ARGOCD_ROOT_REPO_PATH` | Dir in that repo holding child `Application`s (default `apps`) | — |
+| `ARGOCD_ROOT_REPO_REVISION` | Branch/tag/SHA to track (default `main`) | — |
+| `ARGOCD_GIT_URL_PREFIX` | URL prefix for private repos (default `https://github.com/StruBoy/`) | — |
+| `ARGOCD_GIT_USERNAME` | Git username for private-repo PAT | — |
+| `ARGOCD_GIT_TOKEN` | GitHub PAT / token covering all private repos under the prefix | No private-repo creds created (public repos still clone anonymously) |
+
+```
+ARGOCD_ADMIN_PASS=$(openssl rand -base64 16)
+ARGOCD_ROOT_REPO_URL=https://github.com/StruBoy/<your-gitops-repo>.git
+ARGOCD_ROOT_REPO_PATH=apps
+ARGOCD_ROOT_REPO_REVISION=main
+ARGOCD_GIT_URL_PREFIX=https://github.com/StruBoy/
+ARGOCD_GIT_USERNAME=StruBoy
+ARGOCD_GIT_TOKEN=ghp_xxx          # fine-grained PAT with read access to your private repos
+```
+
+To rotate the admin password or change the root repo later, update `.env` and re-run the GitOps
+layer: `make gitops` (or `ansible-playbook -i inventory/hosts.ini addons.yml --tags argocd`).
+
+---
+
+## 9. Wiring `.env` into your shell
 
 The Makefile expects `.env` to be sourced into the environment before targets run. Two common patterns:
 
@@ -452,7 +487,7 @@ Now `cd /path/to/stru-kube` auto-loads `.env`. `.envrc` should also be gitignore
 
 ---
 
-## 9. Sanity check
+## 10. Sanity check
 
 Confirm everything is wired:
 

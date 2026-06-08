@@ -1,0 +1,18 @@
+---
+# Sealed Secrets controller Helm values.
+#
+# The release is installed into kube-system (sealed_secrets_namespace). We pin
+# the controller's resource name to `sealed-secrets-controller` so it matches
+# kubeseal's compiled-in defaults (--controller-namespace kube-system
+# --controller-name sealed-secrets-controller). That makes the day-2 `kubeseal`
+# workflow flag-free. See docs/runbook.md.
+fullnameOverride: sealed-secrets-controller
+
+# Single replica is fine for a homelab: the controller is not on the data path
+# for running pods — it only decrypts SealedSecret -> Secret at apply time.
+#
+# OPERATIONAL: on first start the controller generates an RSA sealing key stored
+# as a Secret in kube-system labeled
+# `sealedsecrets.bitnami.com/sealed-secrets-key=active`. That private key is the
+# ROOT OF TRUST for every SealedSecret you commit to Git. BACK IT UP off-cluster
+# (see docs/runbook.md) — losing it orphans every committed SealedSecret.

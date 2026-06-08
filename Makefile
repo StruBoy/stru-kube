@@ -1,4 +1,4 @@
-.PHONY: help preflight bootstrap-pve wipeclean plan apply configure addons verify verify-full reset clean fmt validate syntax-check
+.PHONY: help preflight bootstrap-pve wipeclean plan apply configure addons gitops verify verify-full reset clean fmt validate syntax-check
 
 SHELL := /bin/bash
 TOFU_DIR := opentofu
@@ -17,7 +17,8 @@ help:
 	@echo "  plan            tofu init + tofu plan (runs preflight first)"
 	@echo "  apply           tofu apply (provisions VMs, writes ansible inventory)"
 	@echo "  configure       ansible-playbook site.yml (installs RKE2; runs preflight first)"
-	@echo "  addons          ansible-playbook addons.yml (MetalLB, Longhorn, nginx ingress)"
+	@echo "  addons          ansible-playbook addons.yml (MetalLB, Longhorn, ArgoCD, Sealed Secrets)"
+	@echo "  gitops          ansible-playbook addons.yml --tags argocd,sealed-secrets (re-run just the GitOps layer)"
 	@echo "  verify          kubeconfig + VIP reachability + kubectl smoke tests"
 	@echo "  verify-full     verify, then deploy a LoadBalancer service end-to-end (deletes it after)"
 	@echo "  reset           ansible-playbook reset.yml (uninstall RKE2 cleanly)"
@@ -51,6 +52,10 @@ configure: preflight
 addons:
 	$(SOURCE_ENV); cd $(ANSIBLE_DIR) && ansible-playbook -i inventory/hosts.ini addons.yml
 
+# Re-run just the GitOps layer (e.g. after setting ARGOCD_ROOT_REPO_URL in .env).
+gitops:
+	$(SOURCE_ENV); cd $(ANSIBLE_DIR) && ansible-playbook -i inventory/hosts.ini addons.yml --tags argocd,sealed-secrets
+
 verify:
 	@export KUBECONFIG=$(KUBECONFIG_FILE); \
 		if [ ! -f "$$KUBECONFIG" ]; then \
@@ -77,7 +82,13 @@ verify:
 		esac; \
 		kubectl get nodes -o wide && \
 		kubectl get pods -A && \
-		kubectl get sc
+		kubectl get sc; \
+		kubectl -n argocd rollout status deploy/argocd-server --timeout=5s 2>/dev/null \
+			&& echo "argocd-server is Available" \
+			|| echo "(argocd not installed yet — run 'make gitops')"; \
+		kubectl -n kube-system get deploy sealed-secrets-controller >/dev/null 2>&1 \
+			&& echo "sealed-secrets-controller present" \
+			|| echo "(sealed-secrets not installed yet — run 'make gitops')"
 
 # Deploys a LoadBalancer service end-to-end. Catches MetalLB pool mis-config and
 # nginx-ingress / kube-proxy regressions that `verify` would miss.

@@ -295,6 +295,64 @@ ssh root@<pve-host> 'ls -l /etc/systemd/network/10-stru-kube-no-offload.link 2>&
 
 Subsequent reboots will use the systemd-service mechanism and the rename rule will fire normally.
 
+## ArgoCD UI: redirect loop / 502 / `ERR_TOO_MANY_REDIRECTS`
+
+**Symptom:** `http://argocd.lan` bounces between http→https forever, or nginx returns 502.
+
+**Cause:** argocd-server defaults to serving its own (self-signed) TLS. Behind nginx — which
+terminates and proxies plain HTTP — that double-termination loops. Either `server.insecure` isn't
+set, or the ingress is missing the HTTP backend-protocol annotation.
+
+**Fix:** both settings are load-bearing *together* —
+`configs.params."server.insecure": true` in [addons/argocd/values.yaml](../addons/argocd/values.yaml)
+**and** `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` in
+[addons/argocd/ingress.yaml](../addons/argocd/ingress.yaml). Re-run `make gitops` after fixing, and
+restart the server if the configmap changed: `kubectl -n argocd rollout restart deploy/argocd-server`.
+
+## ArgoCD admin password change ignored
+
+**Symptom:** you updated `ARGOCD_ADMIN_PASS` and re-ran, but the old password still works / the new
+one doesn't.
+
+**Causes:**
+- `admin.passwordMtime` didn't change — ArgoCD only reloads the password when the mtime moves. The
+  `Set ArgoCD admin password` task in [addons.yml](../ansible/addons.yml) bumps it; make sure that
+  task actually ran (it's `when: argocd_admin_pass | length > 0`).
+- bcrypt `$2y$` prefix — Go's verifier rejects `$2y$`; the play normalizes htpasswd's output to
+  `$2a$` with `sed`. If you hand-craft the hash, use `$2a$`.
+
+**Fix:** `make gitops` (or `--tags argocd`) with a non-empty `ARGOCD_ADMIN_PASS` in `.env`.
+
+## ArgoCD app stuck: root app `Unknown`/`Degraded`, or "authentication required"
+
+**Symptom:** `kubectl -n argocd get applications` shows `root` (or a child) not Synced; logs mention
+`repository not found` or `authentication required`.
+
+**Causes:**
+- Empty/wrong `repoURL`, `path`, or `targetRevision`. (With `ARGOCD_ROOT_REPO_URL` unset the root
+  app is intentionally *not created* — that's expected, not a failure.)
+- Private repo without matching creds: the `repo-creds` Secret's `url` must be a **prefix** of the
+  repo URL and carry the label `argocd.argoproj.io/secret-type: repo-creds`; the PAT must be valid.
+
+**Fix:** verify the repo-creds Secret (`kubectl -n argocd get secret -l
+argocd.argoproj.io/secret-type=repo-creds`), confirm `ARGOCD_GIT_URL_PREFIX` is a prefix of the
+repo, refresh the PAT if expired, then `make gitops`.
+
+## SealedSecret won't decrypt: "no key could decrypt secret"
+
+**Symptom:** a `SealedSecret` stays unencrypted-target-missing; controller logs show the above.
+
+**Causes:**
+- Sealed against a **different controller key** — the cluster (or just the sealed-secrets key) was
+  rebuilt, so the key that encrypted it is gone. This is the big one: the sealing key is the root of
+  trust. See [runbook → back up the sealing key](runbook.md#back-up-the-sealed-secrets-sealing-key).
+- Wrong scope — by default a `SealedSecret` is bound to its **namespace + name**; sealing it for one
+  and applying under another fails.
+
+**Fix:** restore the backed-up sealing key (`kubectl apply` it, then
+`kubectl -n kube-system rollout restart deploy/sealed-secrets-controller`), or re-seal the secret
+against the current key with `kubeseal`.
+
 ## Trailing-slash error: "no such file '/json/version'"
 
 **Symptom:**

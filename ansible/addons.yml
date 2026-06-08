@@ -1,5 +1,5 @@
 ---
-- name: Install cluster addons (MetalLB, Longhorn) — ingress uses bundled rke2-ingress-nginx
+- name: Install cluster addons (MetalLB, Longhorn, ArgoCD, Sealed Secrets) — ingress uses bundled rke2-ingress-nginx
   hosts: rke2_first
   become: false
   gather_facts: false
@@ -137,3 +137,171 @@
         template: "{{ playbook_dir }}/../addons/longhorn/ingress.yaml"
       delegate_to: localhost
       tags: [longhorn]
+
+    # --- ArgoCD (GitOps) ---
+    # ArgoCD's own admin password + private-repo PAT are BOOTSTRAP secrets: they
+    # must exist before ArgoCD can authenticate a login or clone a private repo,
+    # so they come from .env via Ansible (like RKE2_TOKEN/LONGHORN_UI_PASS), not
+    # from a SealedSecret. App-level secrets thereafter go through Sealed Secrets
+    # in Git. See docs/architecture.md for the two-tier secret model.
+    - name: Create argocd namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: argocd
+      delegate_to: localhost
+      tags: [argocd]
+
+    - name: Add ArgoCD Helm repo
+      kubernetes.core.helm_repository:
+        name: argo
+        repo_url: https://argoproj.github.io/argo-helm
+      delegate_to: localhost
+      tags: [argocd]
+
+    - name: Install ArgoCD chart
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig }}"
+        name: argocd
+        chart_ref: argo/argo-cd
+        chart_version: "{{ argocd_chart_version }}"
+        release_namespace: argocd
+        wait: true
+        wait_timeout: 10m
+        values_files:
+          - "{{ playbook_dir }}/../addons/argocd/values.yaml"
+      delegate_to: localhost
+      tags: [argocd]
+
+    # ArgoCD requires bcrypt; htpasswd emits a $2y$ prefix that Go's verifier
+    # rejects, so normalize to $2a$. Skipped when ARGOCD_ADMIN_PASS is unset
+    # (the chart's random initial password in argocd-initial-admin-secret stays).
+    - name: Generate bcrypt hash for ArgoCD admin password
+      ansible.builtin.shell: |
+        set -o pipefail
+        htpasswd -nbBC 10 "" '{{ argocd_admin_pass }}' | tr -d ':\n' | sed 's/^[$]2y/$2a/'
+      args:
+        executable: /bin/bash
+      register: argocd_admin_bcrypt
+      changed_when: false
+      no_log: true
+      delegate_to: localhost
+      when: argocd_admin_pass | length > 0
+      tags: [argocd]
+
+    # ArgoCD only reloads the admin password when admin.passwordMtime changes.
+    - name: Compute ArgoCD admin password mtime
+      ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
+      register: argocd_admin_mtime
+      changed_when: false
+      delegate_to: localhost
+      when: argocd_admin_pass | length > 0
+      tags: [argocd]
+
+    # Patch the chart-created argocd-secret rather than feeding the password
+    # through Helm — keeps the secret out of Git and the Helm release idempotent.
+    # (This task reports "changed" each run because bcrypt re-salts; harmless.)
+    - name: Set ArgoCD admin password (bcrypt) in argocd-secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: patched
+        kind: Secret
+        name: argocd-secret
+        namespace: argocd
+        definition:
+          stringData:
+            admin.password: "{{ argocd_admin_bcrypt.stdout }}"
+            admin.passwordMtime: "{{ argocd_admin_mtime.stdout }}"
+      delegate_to: localhost
+      no_log: true
+      when: argocd_admin_pass | length > 0
+      tags: [argocd]
+
+    - name: Apply ArgoCD UI ingress
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        template: "{{ playbook_dir }}/../addons/argocd/ingress.yaml"
+      delegate_to: localhost
+      tags: [argocd]
+
+    # Private-repo credentials as an org-wide repo-creds TEMPLATE: any repo whose
+    # URL starts with argocd_git_url_prefix inherits this PAT (one credential
+    # covers every private repo under the org). Public repos match no prefix and
+    # are cloned anonymously. Skipped when ARGOCD_GIT_TOKEN is unset.
+    - name: Create ArgoCD repo-creds for private repos (org-wide template)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: repo-creds-stru
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repo-creds
+          type: Opaque
+          stringData:
+            type: git
+            url: "{{ argocd_git_url_prefix }}"
+            username: "{{ argocd_git_username }}"
+            password: "{{ argocd_git_token }}"
+      delegate_to: localhost
+      no_log: true
+      when: argocd_git_token | length > 0
+      tags: [argocd]
+
+    # App-of-apps root. Skipped until ARGOCD_ROOT_REPO_URL is set so `make addons`
+    # stays green before a GitOps repo exists (an Application with an empty
+    # repoURL would sit permanently Degraded).
+    - name: Apply ArgoCD app-of-apps root Application
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        template: "{{ playbook_dir }}/../addons/argocd/root-app.yaml"
+      delegate_to: localhost
+      when: argocd_root_repo_url | length > 0
+      tags: [argocd]
+
+    # --- Sealed Secrets (secrets-in-Git) ---
+    # Controller lives in kube-system (already privileged; no PSA labels needed)
+    # named sealed-secrets-controller to match kubeseal defaults. The sealing key
+    # it generates is the root of trust — back it up (see docs/runbook.md).
+    - name: Add Sealed Secrets Helm repo
+      kubernetes.core.helm_repository:
+        name: sealed-secrets
+        repo_url: https://bitnami-labs.github.io/sealed-secrets
+      delegate_to: localhost
+      tags: [sealed-secrets]
+
+    - name: Install Sealed Secrets chart
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig }}"
+        name: sealed-secrets
+        chart_ref: sealed-secrets/sealed-secrets
+        chart_version: "{{ sealed_secrets_chart_version }}"
+        release_namespace: "{{ sealed_secrets_namespace }}"
+        wait: true
+        wait_timeout: 5m
+        values_files:
+          - "{{ playbook_dir }}/../addons/sealed-secrets/values.yaml"
+      delegate_to: localhost
+      tags: [sealed-secrets]
+
+    - name: Wait for SealedSecret CRD to be established
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: sealedsecrets.bitnami.com
+      register: ss_crd
+      until: ss_crd.resources | length > 0
+      retries: 30
+      delay: 5
+      delegate_to: localhost
+      tags: [sealed-secrets]

@@ -21,7 +21,8 @@ make bootstrap-pve   # one-time PVE setup: TerraformProv role, terraform@pve use
 make plan            # tofu init + tofu plan -out=tfplan (in opentofu/) — runs preflight first
 make apply           # tofu apply tfplan — provisions 6 VMs, writes ansible/inventory/hosts.ini
 make configure       # ansible-galaxy + ansible-playbook site.yml — installs RKE2 — runs preflight first
-make addons          # ansible-playbook addons.yml — MetalLB + Longhorn (ingress already bundled)
+make addons          # ansible-playbook addons.yml — MetalLB + Longhorn + ArgoCD + Sealed Secrets
+make gitops          # ansible-playbook addons.yml --tags argocd,sealed-secrets — re-run just GitOps
 make verify          # kubeconfig URL check + VIP reachability + kubectl get nodes/pods/sc
 make verify-full     # `verify`, then deploys a LoadBalancer service end-to-end and tears it down
 make reset           # uninstall RKE2 cleanly, keep VMs
@@ -42,12 +43,14 @@ cd ansible && ansible-playbook -i inventory/hosts.ini site.yml --tags rke2-serve
 # Limit to one host:
 ansible-playbook -i inventory/hosts.ini site.yml --limit cp2 --tags rke2-server
 
-# Just MetalLB or just Longhorn from the addons playbook:
+# Just MetalLB / Longhorn / ArgoCD / Sealed Secrets from the addons playbook:
 ansible-playbook -i inventory/hosts.ini addons.yml --tags metallb
 ansible-playbook -i inventory/hosts.ini addons.yml --tags longhorn
+ansible-playbook -i inventory/hosts.ini addons.yml --tags argocd
+ansible-playbook -i inventory/hosts.ini addons.yml --tags sealed-secrets
 ```
 
-Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-bootstrap`, `rke2-agent`, `post-install`, `metallb`, `longhorn`, `pve-bootstrap`, `pve-nic-offload`, `pve-wipeclean`.
+Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-bootstrap`, `rke2-agent`, `post-install`, `metallb`, `longhorn`, `argocd`, `sealed-secrets`, `pve-bootstrap`, `pve-nic-offload`, `pve-wipeclean`.
 
 ## Architecture you can't see from one file
 
@@ -66,7 +69,9 @@ Tags in use: `common`, `longhorn-prereqs`, `kube-vip`, `rke2-server`, `rke2-boot
 
 **Ingress is `rke2-ingress-nginx`, not Traefik.** Traefik is K3s. The bundled nginx controller runs as a DaemonSet with hostPort 80/443 on every node — so clients hit any node IP directly, and MetalLB's `10.74.2.200-220` pool stays free for app `type: LoadBalancer` services. Longhorn UI ingress uses standard `networking.k8s.io/v1` with nginx basic-auth annotations (Secret key `auth`, **not** Traefik's `users`).
 
-**Secrets are env-only.** `.env` (gitignored) is the only secret store. Ansible reads `RKE2_TOKEN` and `LONGHORN_UI_PASS` via `lookup('env', ...)`. The provider reads `PROXMOX_VE_*` via env vars. Migration path to sops-age is sketched in [docs/runbook.md](docs/runbook.md) — don't introduce a different secrets system without updating that.
+**GitOps is bootstrapped by Ansible, then self-managed.** `addons.yml` installs ArgoCD (`argocd` tag) and Sealed Secrets (`sealed-secrets` tag) like any other addon, then applies an app-of-apps `root` Application that points at a **separate** GitOps repo (`addons/argocd/root-app.yaml`). stru-kube is the bootstrap layer only — app manifests live in those separate repos. **ArgoCD server runs insecure behind nginx**: `configs.params."server.insecure": true` + the ingress's `backend-protocol: "HTTP"` annotation are load-bearing *together* (omit either → redirect loop / 502). The `root` app and the private-repo `repo-creds` Secret are both `when:`-guarded — skipped until `ARGOCD_ROOT_REPO_URL` / `ARGOCD_GIT_TOKEN` are set — so `make addons` stays green before a GitOps repo exists.
+
+**Secrets are two-tier.** `.env` (gitignored) is the only *bootstrap* secret store: Ansible reads `RKE2_TOKEN`, `LONGHORN_UI_PASS`, and ArgoCD's own `ARGOCD_ADMIN_PASS` / `ARGOCD_GIT_TOKEN` via `lookup('env', ...)`; the provider reads `PROXMOX_VE_*` via env vars. ArgoCD's admin password and repo PAT *must* be bootstrap secrets — they're needed before ArgoCD can authenticate or clone. **App-level secrets go through Sealed Secrets**: committed to the GitOps repos as encrypted `SealedSecret` CRs, decrypted in-cluster by the controller in `kube-system`. The sealing key is the root of trust — back it up (see [docs/runbook.md](docs/runbook.md#back-up-the-sealed-secrets-sealing-key)). Migration path to sops-age for `.env` itself is sketched in the runbook — don't introduce a different secrets system without updating that.
 
 **Host NIC offloads (GSO/TSO) are disabled by `bootstrap-pve` via a systemd oneshot service.** [ansible/roles/pve_nic_offload](ansible/roles/pve_nic_offload/) installs `/etc/systemd/system/stru-kube-nic-offload.service` (a `Type=oneshot RemainAfterExit=yes` unit) that runs `ethtool -K <iface> gso off tso off` on every NIC matching `en* eth* nic*` after `network.target`. The role `systemctl enable --now`'s it so the offload disable takes effect immediately and re-fires automatically at every boot. Reason: during a deploy, stru-prox0 fell off the network under Longhorn's container-pull load — the signature of a NIC driver wedging with hardware segmentation offload enabled (common Realtek/Intel bug). **Don't replace this with a systemd `.link` file** — an earlier version of this role did exactly that, and the file shadowed the host's boot-time `eno2 → nic0` rename rule (per `man systemd.link`, only the first matching `.link` per device is applied), leaving `vmbr0` with no slave on reboot. The service-based approach has no interaction with `.link` matching. Don't remove the role without confirming the underlying hardware is offload-stable.
 
@@ -85,6 +90,10 @@ These are tarpits — each one represents a debugged incident, captured in [docs
 - **`RKE2_TOKEN` must be non-empty in the env** when `site.yml` runs — `lookup('env', 'RKE2_TOKEN')` happens at template-render time, and a partial-environment invocation will silently render `token:` empty. *`make preflight` and a `localhost` `pre_tasks` assert in `site.yml` both catch this.*
 - **etcd is intolerant of clock skew across CPs.** *`common` role asserts `chronyc tracking` reports `Leap status: Normal` before RKE2 ever installs.*
 - **kube-vip's `hostAliases` and the manifest-change handler are load-bearing**, not cosmetic — see the architecture section above.
+- **ArgoCD server must run insecure + the ingress must set `backend-protocol: "HTTP"`** — both together, or you get a redirect loop / 502. Set in [addons/argocd/values.yaml](addons/argocd/values.yaml) and [addons/argocd/ingress.yaml](addons/argocd/ingress.yaml).
+- **The Sealed Secrets sealing key (in `kube-system`, label `sealedsecrets.bitnami.com/sealed-secrets-key=active`) is the root of trust.** Losing it orphans every committed SealedSecret. Back it up off-cluster — it is *not* backed up automatically, by design. See [docs/runbook.md](docs/runbook.md#back-up-the-sealed-secrets-sealing-key).
+- **ArgoCD admin password needs the `admin.passwordMtime` bump + a `$2a$` bcrypt prefix** — ArgoCD ignores a password change unless the mtime moves, and Go's bcrypt rejects htpasswd's `$2y$` (the `addons.yml` task `sed`s it to `$2a$`).
+- **Keep the app-of-apps `when: argocd_root_repo_url | length > 0` guard** — applying a `root` Application with an empty `repoURL` leaves it permanently Degraded.
 
 ## Verification (after any cluster-touching change)
 

@@ -55,6 +55,27 @@ Pod CIDR `10.42.0.0/16`, Service CIDR `10.43.0.0/16`, cluster DNS suffix `cluste
 | LoadBalancer       | MetalLB (L2 mode)                                     |
 | Ingress            | `rke2-ingress-nginx` (RKE2-bundled, DaemonSet hostPort 80/443) |
 | Storage            | Longhorn (3 replicas, default StorageClass)           |
+| GitOps             | ArgoCD (`argo-cd` chart, server insecure behind nginx) |
+| Secrets-in-Git     | Bitnami Sealed Secrets (controller in `kube-system`)  |
+
+## GitOps & secrets model
+
+ArgoCD turns the cluster into a GitOps control plane: workloads are reconciled from Git, not
+`kubectl apply`-ed by hand. **stru-kube is the bootstrap layer only** — it installs ArgoCD +
+Sealed Secrets and an app-of-apps `root` Application; the actual app manifests live in **separate**
+GitOps repos (some public, some private). Day-2 app changes happen by editing those repos.
+
+**Two secret tiers:**
+- **Bootstrap secrets** — ArgoCD's own admin password and the private-repo PAT. These must exist
+  *before* ArgoCD can authenticate a login or clone a private repo (chicken-and-egg), so they live
+  in `.env` and are injected by Ansible, exactly like `RKE2_TOKEN`/`LONGHORN_UI_PASS`.
+- **App secrets** — everything else. Committed to the GitOps repos as encrypted `SealedSecret` CRs
+  and decrypted in-cluster by the sealed-secrets controller. Never plaintext in Git.
+
+> **Roadmap (deferred, not in the GitOps foundation pass):** cert-manager (real TLS on
+> `argocd.lan`/`longhorn.lan` + a gRPC/SSL-passthrough ingress for the `argocd` CLI),
+> kube-prometheus-stack (Prometheus/Grafana/Alertmanager, deployed *via* ArgoCD), and Dex/SSO for
+> ArgoCD. See [PLAN.md](../PLAN.md) for the component roadmap.
 
 ## Decisions log
 
@@ -70,3 +91,8 @@ Pod CIDR `10.42.0.0/16`, Service CIDR `10.43.0.0/16`, cluster DNS suffix `cluste
 - **PVE one-time setup is automated** via [ansible/bootstrap-pve.yml](../ansible/bootstrap-pve.yml). The `TerraformProv` role, `terraform@pve` user, Snippets-on-`local`, and the `pve_hosts` ↔ live-cluster validation are all idempotent — re-running `make bootstrap-pve` is safe and fixes drift. The matching teardown is `make wipeclean CONFIRM=yes`.
 - **Plan-time validation in OpenTofu** via [opentofu/preflight.tf](../opentofu/preflight.tf). A `terraform_data` precondition cross-checks `var.pve_hosts` against the live cluster's node list at the start of every plan, turning a cryptic apply-time HTTP 500 into a clear plan-time diff.
 - **Strong wait for kube-vip → API**. `site.yml` uses `ansible.builtin.uri` against `/livez`, not a bare port-open check — the join only proceeds when the API is actually serving requests, eliminating the cp2/cp3 race.
+- **ArgoCD server runs insecure behind nginx.** `configs.params."server.insecure": true` + the ingress annotation `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` — nginx terminates the connection and proxies plain HTTP to argocd-server. This avoids ArgoCD's self-signed TLS double-termination (redirect loop / 502) and needs no cert until cert-manager lands. The two settings are load-bearing *together*.
+- **App-of-apps with separate repos.** A single `root` Application (applied by Ansible, guarded so it's skipped until `ARGOCD_ROOT_REPO_URL` is set) points at a separate GitOps repo whose `apps/` dir holds child `Application`s. Keeps stru-kube as the bootstrap layer; app churn doesn't touch this repo.
+- **Private-repo creds as an org-wide `repo-creds` template.** One Secret labeled `argocd.argoproj.io/secret-type: repo-creds` with a URL *prefix* (`https://github.com/StruBoy/`) lets a single PAT cover every private repo under the org; public repos match no prefix and clone anonymously. Built from `.env` by Ansible, never committed.
+- **Sealed Secrets over SOPS/External-Secrets.** Encrypted `SealedSecret` CRs commit straight to Git with no decrypt sidecar in ArgoCD; the controller lives in `kube-system` named `sealed-secrets-controller` so `kubeseal` works flag-free. The controller's RSA sealing key is the root of trust — back it up (see [runbook](runbook.md#back-up-the-sealed-secrets-sealing-key)).
+- **ArgoCD bootstrap secrets stay in `.env`.** Admin password + repo PAT are bootstrap secrets (needed before ArgoCD can pull anything), so they're Ansible/`.env`, not SealedSecrets. App secrets go through Sealed Secrets. See the two-tier model above.

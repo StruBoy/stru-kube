@@ -98,6 +98,89 @@ When this grows beyond one operator:
 3. Replace `.env` with `secrets.enc.env` (sops-encrypted), update Makefile to `sops exec-env secrets.enc.env "set -a; ..."`.
 4. Commit `secrets.enc.env` (encrypted) and `.sops.yaml`; gitignore the unencrypted file.
 
+## GitOps (ArgoCD)
+
+ArgoCD + Sealed Secrets are deployed by `make addons` (or `make gitops` to (re)run just the GitOps
+layer). All ArgoCD inputs are optional `.env` vars — blank ones make the matching task skip, so the
+controller installs cleanly before you've created any GitOps repo.
+
+### Log into the ArgoCD UI
+
+The UI is at `http://argocd.lan` (LAN DNS → any node's hostPort 80; add a hosts entry if your LAN
+resolver doesn't know `argocd.lan`). User is `admin`. The password is whatever you set in
+`ARGOCD_ADMIN_PASS`. If you left it blank, read the chart's random initial password:
+
+```sh
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+### Point ArgoCD at your GitOps repo (app-of-apps root)
+
+1. Set `ARGOCD_ROOT_REPO_URL` (and `_PATH`, default `apps`; `_REVISION`, default `main`) in `.env`.
+2. `make gitops` — the `root` Application is applied and starts syncing.
+3. `kubectl -n argocd get applications` — `root` should go Synced/Healthy.
+
+Your GitOps repo's `apps/` dir holds child `Application` manifests, one per app — each pointing at
+its own repo/path. This is the app-of-apps pattern; stru-kube only bootstraps `root`.
+
+### Add an app / a new repo (public or private)
+
+- **Public repo:** add an `Application` to the root repo's `apps/` dir. No credentials needed.
+- **Private repo:** make sure the repo URL is under `ARGOCD_GIT_URL_PREFIX` and `ARGOCD_GIT_TOKEN`
+  is a valid PAT in `.env`, then `make gitops` (creates/updates the org-wide `repo-creds` Secret).
+  Now add the `Application`. For a one-off private repo *outside* the org prefix, create a
+  per-repo `repository`-typed Secret instead (same fields, label
+  `argocd.argoproj.io/secret-type: repository`, `url` = the exact repo URL).
+
+### Rotate the ArgoCD admin password
+
+Update `ARGOCD_ADMIN_PASS` in `.env`, then `make gitops` (or
+`ansible-playbook -i inventory/hosts.ini addons.yml --tags argocd`). The play re-bcrypts it and
+bumps `admin.passwordMtime` in `argocd-secret`, which is what forces ArgoCD to reload it.
+
+## Sealed Secrets
+
+Encrypt secrets so they can live in Git. The controller runs in `kube-system` named
+`sealed-secrets-controller` (matching `kubeseal`'s defaults, so no flags needed).
+
+### Seal a secret
+
+```sh
+brew install kubeseal     # macOS; or download from the sealed-secrets releases
+# Build a normal Secret locally, pipe through kubeseal, commit the SealedSecret:
+kubectl create secret generic my-app-creds \
+  --namespace my-app --from-literal=token=s3cr3t \
+  --dry-run=client -o yaml \
+  | kubeseal --format yaml > my-app-creds.sealed.yaml
+# Commit my-app-creds.sealed.yaml to your GitOps repo — ArgoCD applies it, the
+# controller decrypts it into a real Secret in-cluster.
+```
+
+A `SealedSecret` is, by default (`strict` scope), bound to its **namespace + name** — you can't
+rename or move it without re-sealing.
+
+### Back up the Sealed Secrets sealing key
+
+The controller auto-generates an RSA **sealing key** on first start, stored in `kube-system`. It is
+the **root of trust** for every `SealedSecret` you've committed — if the cluster is rebuilt and this
+key is lost, every committed SealedSecret becomes undecryptable and must be re-sealed. Back it up
+off-cluster, encrypted, and **never commit it**:
+
+```sh
+kubectl -n kube-system get secret \
+  -l sealedsecrets.bitnami.com/sealed-secrets-key=active \
+  -o yaml > sealed-secrets-key.backup.yaml    # store OFFLINE / encrypted
+```
+
+Restore into a fresh cluster *before* the controller generates a new key (or `kubectl apply` it then
+restart the controller so it adopts the restored key):
+
+```sh
+kubectl apply -f sealed-secrets-key.backup.yaml
+kubectl -n kube-system rollout restart deploy/sealed-secrets-controller
+```
+
 ## Reset
 
 Three tiers, smallest to largest:

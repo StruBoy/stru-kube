@@ -1,0 +1,28 @@
+---
+# ArgoCD UI/API ingress. Rendered by Ansible (template:) so {{ argocd_host }}
+# resolves. No basic-auth here — ArgoCD has its own login (admin user / SSO).
+#
+# backend-protocol: "HTTP" pairs with `server.insecure: true` in values.yaml —
+# argocd-server speaks plain HTTP, nginx terminates. Both must be present or
+# you get a redirect loop (ERR_TOO_MANY_REDIRECTS) / 502. argocd-server exposes
+# port 80 (http) and 443 (https); target 80 in insecure mode.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ argocd_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80

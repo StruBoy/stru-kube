@@ -96,6 +96,17 @@ for v in PROXMOX_VE_ENDPOINT PROXMOX_VE_API_TOKEN PROXMOX_VE_SSH_USERNAME \
 done
 
 echo
+echo "=== optional GitOps env vars (ArgoCD / Sealed Secrets) ==="
+# Blank is fine — the matching addons.yml task is skipped (WARN, never FAIL).
+for v in ARGOCD_ADMIN_PASS ARGOCD_ROOT_REPO_URL ARGOCD_GIT_TOKEN; do
+  if [ -z "${!v:-}" ]; then
+    note "\$$v unset — related ArgoCD task will be skipped"
+  else
+    ok "\$$v is set"
+  fi
+done
+
+echo
 echo "=== SSH keypair files ==="
 check_file ANSIBLE_SSH_KEY_FILE
 check_file SSH_PUBLIC_KEY_FILE

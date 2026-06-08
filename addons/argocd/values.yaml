@@ -1,0 +1,44 @@
+---
+# ArgoCD Helm values — committed, NO secrets.
+# The admin password + repo credentials are injected by Ansible from .env
+# (see ansible/addons.yml); they never live in Git. See the two-tier secret
+# model in docs/architecture.md (bootstrap secrets vs app SealedSecrets).
+
+global:
+  # Drives the external base URL / redirect host. We terminate TLS at nginx
+  # later (cert-manager roadmap); for now the cm.url below is plain HTTP.
+  domain: argocd.lan
+
+configs:
+  params:
+    # REQUIRED: run argocd-server in insecure (plain HTTP) mode so the bundled
+    # rke2-ingress-nginx can terminate the connection and proxy over HTTP. This
+    # pairs with `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` on the
+    # ingress (addons/argocd/ingress.yaml). Omitting either gives a redirect
+    # loop / 502. See docs/troubleshooting.md.
+    server.insecure: true
+  cm:
+    # External base URL (no TLS today). Used for links, SSO callbacks, etc.
+    url: http://argocd.lan
+
+# No SSO this pass — local `admin` user only. Dex is the roadmap item.
+dex:
+  enabled: false
+
+# Notifications are a roadmap item.
+notifications:
+  enabled: false
+
+# Non-HA single replicas are correct for a 3-CP homelab. To go HA later, set
+# redis-ha.enabled=true and bump the *.replicas below (documented in
+# docs/architecture.md decisions log).
+redis-ha:
+  enabled: false
+controller:
+  replicas: 1
+server:
+  replicas: 1
+repoServer:
+  replicas: 1
+applicationSet:
+  replicas: 1

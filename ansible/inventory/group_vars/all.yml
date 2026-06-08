@@ -24,6 +24,26 @@ longhorn_ui_host: longhorn.lan
 longhorn_ui_user: "{{ lookup('env', 'LONGHORN_UI_USER') | default('admin', true) }}"
 longhorn_ui_pass: "{{ lookup('env', 'LONGHORN_UI_PASS') | default('changeme', true) }}"
 
+# ArgoCD (GitOps)
+argocd_chart_version: "9.5.19"   # argo/argo-cd (app v3.4.3)
+argocd_host: argocd.lan
+# Empty default (not 'changeme') so a blank value is detectable — the admin
+# password task is skipped rather than setting a known-bad password.
+argocd_admin_pass: "{{ lookup('env', 'ARGOCD_ADMIN_PASS') | default('', true) }}"
+# App-of-apps root: your SEPARATE GitOps repo. Blank url => root app is skipped.
+argocd_root_repo_url: "{{ lookup('env', 'ARGOCD_ROOT_REPO_URL') | default('', true) }}"
+argocd_root_repo_path: "{{ lookup('env', 'ARGOCD_ROOT_REPO_PATH') | default('apps', true) }}"
+argocd_root_repo_revision: "{{ lookup('env', 'ARGOCD_ROOT_REPO_REVISION') | default('main', true) }}"
+# Private-repo creds: one PAT covers every repo under this URL prefix. Blank
+# token => repo-creds secret is skipped (public repos clone anonymously).
+argocd_git_url_prefix: "{{ lookup('env', 'ARGOCD_GIT_URL_PREFIX') | default('https://github.com/StruBoy/', true) }}"
+argocd_git_username: "{{ lookup('env', 'ARGOCD_GIT_USERNAME') | default('', true) }}"
+argocd_git_token: "{{ lookup('env', 'ARGOCD_GIT_TOKEN') | default('', true) }}"
+
+# Sealed Secrets (secrets-in-Git)
+sealed_secrets_chart_version: "2.18.6"   # bitnami-labs/sealed-secrets (app 0.37.0)
+sealed_secrets_namespace: kube-system    # matches kubeseal's default controller ns
+
 # Path conventions
 rke2_manifests_dir: /var/lib/rancher/rke2/server/manifests
 rke2_kubeconfig_remote: /etc/rancher/rke2/rke2.yaml
