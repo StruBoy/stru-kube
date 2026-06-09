@@ -106,9 +106,16 @@ controller installs cleanly before you've created any GitOps repo.
 
 ### Log into the ArgoCD UI
 
-The UI is at `http://argocd.lan` (LAN DNS → any node's hostPort 80; add a hosts entry if your LAN
-resolver doesn't know `argocd.lan`). User is `admin`. The password is whatever you set in
-`ARGOCD_ADMIN_PASS`. If you left it blank, read the chart's random initial password:
+Two ways in, both plain HTTP (no TLS until cert-manager lands):
+
+- **By IP:** `http://10.74.2.220` — argocd-server's pinned MetalLB LoadBalancer IP. No DNS or
+  Host header needed; works from any device that can route to `10.74.2.0/24`. Confirm it's up with
+  `kubectl -n argocd get svc argocd-server` (EXTERNAL-IP should read `10.74.2.220`).
+- **By name:** `http://argocd.lan` — the nginx ingress (LAN DNS → any node's hostPort 80; add a
+  hosts entry if your LAN resolver doesn't know `argocd.lan`).
+
+User is `admin`. The password is whatever you set in `ARGOCD_ADMIN_PASS`. If you left it blank, read
+the chart's random initial password:
 
 ```sh
 kubectl -n argocd get secret argocd-initial-admin-secret \

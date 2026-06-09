@@ -38,6 +38,17 @@ controller:
   replicas: 1
 server:
   replicas: 1
+  # Expose argocd-server directly on a MetalLB LoadBalancer IP so it's reachable
+  # by IP without the argocd.lan ingress / Host header (the ingress still works
+  # too — this is additive). In insecure mode the chart's Service maps port 80 →
+  # argocd-server's HTTP port, so browse http://10.74.2.220 (plain HTTP, no TLS).
+  # IP is PINNED via MetalLB's annotation: the pool (addons/metallb/pool.yaml) is
+  # autoAssign:true and fills from the bottom (.200 = verify-full's smoke test),
+  # so we take the TOP of the 10.74.2.200-220 range to avoid a race.
+  service:
+    type: LoadBalancer
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: 10.74.2.220
 repoServer:
   replicas: 1
 applicationSet:

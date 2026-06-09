@@ -35,7 +35,8 @@
 | worker           | w2   | stru-prox1   | 121  | 10.74.2.34    | rke2-agent, longhorn=true |
 | worker           | w3   | stru-prox2   | 131  | 10.74.2.35    | rke2-agent, longhorn=true |
 | K8s API VIP      | —    | —            | —    | 10.74.2.29    | kube-vip ARP              |
-| MetalLB pool     | —    | —            | —    | 10.74.2.200–220 | LoadBalancer services    |
+| MetalLB pool     | —    | —            | —    | 10.74.2.200–220 | LoadBalancer services (autoAssign, fills bottom-up) |
+| ArgoCD UI (LB)   | —    | —            | —    | 10.74.2.220   | pinned MetalLB IP, `http://10.74.2.220` (top of pool) |
 
 Pod CIDR `10.42.0.0/16`, Service CIDR `10.43.0.0/16`, cluster DNS suffix `cluster.local`.
 
@@ -92,6 +93,7 @@ GitOps repos (some public, some private). Day-2 app changes happen by editing th
 - **Plan-time validation in OpenTofu** via [opentofu/preflight.tf](../opentofu/preflight.tf). A `terraform_data` precondition cross-checks `var.pve_hosts` against the live cluster's node list at the start of every plan, turning a cryptic apply-time HTTP 500 into a clear plan-time diff.
 - **Strong wait for kube-vip → API**. `site.yml` uses `ansible.builtin.uri` against `/livez`, not a bare port-open check — the join only proceeds when the API is actually serving requests, eliminating the cp2/cp3 race.
 - **ArgoCD server runs insecure behind nginx.** `configs.params."server.insecure": true` + the ingress annotation `nginx.ingress.kubernetes.io/backend-protocol: "HTTP"` — nginx terminates the connection and proxies plain HTTP to argocd-server. This avoids ArgoCD's self-signed TLS double-termination (redirect loop / 502) and needs no cert until cert-manager lands. The two settings are load-bearing *together*.
+- **ArgoCD also gets a pinned MetalLB IP** (`server.service.type: LoadBalancer` + `metallb.universe.tf/loadBalancerIPs: 10.74.2.220` in [addons/argocd/values.yaml](../addons/argocd/values.yaml)), so the UI is reachable by IP at `http://10.74.2.220` with no DNS / Host header. This is *additive* — the `argocd.lan` ingress still works. The IP is pinned at the **top** of the pool because the pool is `autoAssign: true` and fills bottom-up (`.200` = `verify-full`'s smoke test), so a low pin could be auto-claimed out from under it. Same insecure-mode caveat: it's plain HTTP on port 80, not TLS.
 - **App-of-apps with separate repos.** A single `root` Application (applied by Ansible, guarded so it's skipped until `ARGOCD_ROOT_REPO_URL` is set) points at a separate GitOps repo whose `apps/` dir holds child `Application`s. Keeps stru-kube as the bootstrap layer; app churn doesn't touch this repo.
 - **Private-repo creds as an org-wide `repo-creds` template.** One Secret labeled `argocd.argoproj.io/secret-type: repo-creds` with a URL *prefix* (`https://github.com/StruBoy/`) lets a single PAT cover every private repo under the org; public repos match no prefix and clone anonymously. Built from `.env` by Ansible, never committed.
 - **Sealed Secrets over SOPS/External-Secrets.** Encrypted `SealedSecret` CRs commit straight to Git with no decrypt sidecar in ArgoCD; the controller lives in `kube-system` named `sealed-secrets-controller` so `kubeseal` works flag-free. The controller's RSA sealing key is the root of trust — back it up (see [runbook](runbook.md#back-up-the-sealed-secrets-sealing-key)).
